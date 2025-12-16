@@ -1,0 +1,52 @@
+[
+    {
+      "eventDate": "2005-12-16T09:41",
+      "decimalLatitude": -47.428486,
+      "decimalLongitude": -70.926533
+    },
+    {
+      "eventDate": "2023-04-02T10:39",
+      "decimalLatitude": -50.948586,
+      "decimalLongitude": -72.712978
+    },
+    {
+      "eventDate": null,
+      "decimalLatitude": null,
+      "decimalLongitude": null
+    },
+    {
+      "eventDate": "2025-10-23T08:34",
+      "decimalLatitude": -16.072473,
+      "decimalLongitude": -71.478731
+    },
+    {
+      "eventDate": null,
+      "decimalLatitude": null,
+      "decimalLongitude": null
+    },
+    {
+      "eventDate": null,
+      "decimalLatitude": null,
+      "decimalLongitude": null
+    },
+    {
+      "eventDate": null,
+      "decimalLatitude": null,
+      "decimalLongitude": null
+    },
+    {
+      "eventDate": null,
+      "decimalLatitude": null,
+      "decimalLongitude": null
+    },
+    {
+      "eventDate": "2019-09-09T10:00",
+      "decimalLatitude": -21.524045,
+      "decimalLongitude": -66.896778
+    },
+    {
+      "eventDate": "2009-01-24T20:21:30Z",
+      "decimalLatitude": -22.208272,
+      "decimalLongitude": -67.773521
+    }
+  ]

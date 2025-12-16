@@ -1,0 +1,225 @@
+{
+  "summary": {
+    "test_info": {
+      "test_name": "test_api_batch_mp_10",
+      "input_file": "example_data_v2.json",
+      "total_locations": 1000,
+      "valid_locations": 934,
+      "queries_executed": 934,
+      "max_processes": 10,
+      "actual_processes": 10,
+      "parameter": "T2M",
+      "data_source": "API"
+    },
+    "multiprocessing_performance": {
+      "total_duration_seconds": 98.184,
+      "success_count": 711,
+      "error_count": 223,
+      "success_rate_percent": 76.12,
+      "avg_time_per_query_ms": 105.12,
+      "throughput_queries_per_sec": 9.51,
+      "request_timing": {
+        "avg_ms": 1308.38,
+        "std_ms": 248.86,
+        "min_ms": 842.79,
+        "max_ms": 1910.18
+      },
+      "error_types": {
+        "429 Client Error: Too Many Requests for url: https": 223
+      }
+    }
+  },
+  "sample_results": [
+    {
+      "index": 0,
+      "query": {
+        "start_date": "2005-12-16",
+        "end_date": "2005-12-16",
+        "latitude": -47.428486,
+        "longitude": -70.926533,
+        "parameter": "T2M",
+        "frequency": "daily"
+      },
+      "status": "success",
+      "actual_latitude": -47.428,
+      "actual_longitude": -70.927,
+      "data_points": 1,
+      "first_value": {
+        "date": "2005-12-16",
+        "value": 10.58
+      }
+    },
+    {
+      "index": 1,
+      "query": {
+        "start_date": "2023-04-02",
+        "end_date": "2023-04-02",
+        "latitude": -50.948586,
+        "longitude": -72.712978,
+        "parameter": "T2M",
+        "frequency": "daily"
+      },
+      "status": "success",
+      "actual_latitude": -50.949,
+      "actual_longitude": -72.713,
+      "data_points": 1,
+      "first_value": {
+        "date": "2023-04-02",
+        "value": 6.49
+      }
+    },
+    {
+      "index": 2,
+      "query": {
+        "start_date": "2025-10-23",
+        "end_date": "2025-10-23",
+        "latitude": -16.072473,
+        "longitude": -71.478731,
+        "parameter": "T2M",
+        "frequency": "daily"
+      },
+      "status": "success",
+      "actual_latitude": -16.072,
+      "actual_longitude": -71.479,
+      "data_points": 1,
+      "first_value": {
+        "date": "2025-10-23",
+        "value": 7.37
+      }
+    },
+    {
+      "index": 3,
+      "query": {
+        "start_date": "2019-09-09",
+        "end_date": "2019-09-09",
+        "latitude": -21.524045,
+        "longitude": -66.896778,
+        "parameter": "T2M",
+        "frequency": "daily"
+      },
+      "status": "success",
+      "actual_latitude": -21.524,
+      "actual_longitude": -66.897,
+      "data_points": 1,
+      "first_value": {
+        "date": "2019-09-09",
+        "value": 2.6
+      }
+    },
+    {
+      "index": 4,
+      "query": {
+        "start_date": "2009-01-24",
+        "end_date": "2009-01-24",
+        "latitude": -22.208272,
+        "longitude": -67.773521,
+        "parameter": "T2M",
+        "frequency": "daily"
+      },
+      "status": "success",
+      "actual_latitude": -22.208,
+      "actual_longitude": -67.774,
+      "data_points": 1,
+      "first_value": {
+        "date": "2009-01-24",
+        "value": 5.06
+      }
+    },
+    {
+      "index": 5,
+      "query": {
+        "start_date": "2003-03-28",
+        "end_date": "2003-03-28",
+        "latitude": -3.383022,
+        "longitude": 28.794454,
+        "parameter": "T2M",
+        "frequency": "daily"
+      },
+      "status": "success",
+      "actual_latitude": -3.383,
+      "actual_longitude": 28.794,
+      "data_points": 1,
+      "first_value": {
+        "date": "2003-03-28",
+        "value": 16.25
+      }
+    },
+    {
+      "index": 6,
+      "query": {
+        "start_date": "2011-04-05",
+        "end_date": "2011-04-05",
+        "latitude": -11.219901,
+        "longitude": -36.4929058,
+        "parameter": "T2M",
+        "frequency": "daily"
+      },
+      "status": "success",
+      "actual_latitude": -11.22,
+      "actual_longitude": -36.493,
+      "data_points": 1,
+      "first_value": {
+        "date": "2011-04-05",
+        "value": 27.95
+      }
+    },
+    {
+      "index": 7,
+      "query": {
+        "start_date": "2010-02-27",
+        "end_date": "2010-02-27",
+        "latitude": -7.12362476,
+        "longitude": -41.54040317,
+        "parameter": "T2M",
+        "frequency": "daily"
+      },
+      "status": "success",
+      "actual_latitude": -7.124,
+      "actual_longitude": -41.54,
+      "data_points": 1,
+      "first_value": {
+        "date": "2010-02-27",
+        "value": 27.03
+      }
+    },
+    {
+      "index": 8,
+      "query": {
+        "start_date": "2006-10-24",
+        "end_date": "2006-10-24",
+        "latitude": 51.4778144,
+        "longitude": 22.4424684,
+        "parameter": "T2M",
+        "frequency": "daily"
+      },
+      "status": "success",
+      "actual_latitude": 51.478,
+      "actual_longitude": 22.442,
+      "data_points": 1,
+      "first_value": {
+        "date": "2006-10-24",
+        "value": 14.37
+      }
+    },
+    {
+      "index": 9,
+      "query": {
+        "start_date": "2009-02-17",
+        "end_date": "2009-02-17",
+        "latitude": 43.7020082,
+        "longitude": 127.0309576,
+        "parameter": "T2M",
+        "frequency": "daily"
+      },
+      "status": "success",
+      "actual_latitude": 43.702,
+      "actual_longitude": 127.031,
+      "data_points": 1,
+      "first_value": {
+        "date": "2009-02-17",
+        "value": -18.64
+      }
+    }
+  ],
+  "all_results_count": 934
+}
