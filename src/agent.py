@@ -17,7 +17,7 @@ class NASAPowerQueryParams(BaseModel):
     """Parameters for querying NASA POWER data"""
     latitude: Optional[float] = Field(None, description="Latitude (-90 to 90). Use this for single location queries.", ge=-90, le=90)
     longitude: Optional[float] = Field(None, description="Longitude (-180 to 180). Use this for single location queries.", ge=-180, le=180)
-    locations: Optional[List[Dict[str, float]]] = Field(None, description="List of locations with 'latitude' and 'longitude' keys. Use this for multiple location queries.")
+    locations: Optional[List[dict[str, float]]] = Field(None, description="List of locations with 'latitude' and 'longitude' keys. Use this for multiple location queries.")
     parameter: str = Field(default="T2M", description="Weather parameter to query (e.g., T2M, RH2M)")
     start_date: Optional[str] = Field(None, description="Start date in YYYY-MM-DD format")
     end_date: Optional[str] = Field(None, description="End date in YYYY-MM-DD format")
@@ -58,7 +58,14 @@ class NASAPowerAgent(IChatBioAgent):
             entrypoints=[
                 AgentEntrypoint(
                     id="query_weather",
-                    description="Query weather and climate data for one or more locations and time periods. Supports single location queries, date ranges (e.g., '20-25 December 2024'), and multiple locations. For date ranges or multiple locations, automatically uses batch processing for optimal performance. Returns a human-readable summary with sample data points.",
+                    description=(
+                        "Query weather and climate data for one or more locations and time periods. "
+                        "Use this for ALL questions about weather data (e.g., 'What was the temperature in X?', 'Show me weather for multiple cities', 'Get weather data for date ranges'). "
+                        "Supports single location queries, date ranges (e.g., '20-25 December 2024'), and multiple locations. "
+                        "For date ranges or multiple locations, automatically uses batch processing for optimal performance. "
+                        "Returns a human-readable summary with sample data points. "
+                        "This is the PRIMARY entrypoint for weather queries and questions."
+                    ),
                     parameters=NASAPowerQueryParams
                 ),
                 AgentEntrypoint(
@@ -69,12 +76,14 @@ class NASAPowerAgent(IChatBioAgent):
                 AgentEntrypoint(
                     id="enrich_locations",
                     description=(
-                        "Enrich/add NASA POWER weather fields to an array of JSON location records. "
-                        "Use this when the user wants to add/enrich/append weather data fields to location records. "
+                        "ONLY use this when the user has an EXISTING dataset/array of location records (typically in JSON format) that they want to enrich with weather data. "
+                        "This is NOT for general weather queries or questions. "
+                        "Use this ONLY when the user explicitly wants to add/enrich/append weather data fields to existing location records in their dataset. "
                         "Each record should have eventDate, decimalLatitude, and decimalLongitude fields. "
                         "IMPORTANT: When the user pastes/provides JSON text directly in the chat, use the locations_json parameter with the JSON string. "
                         "Only use locations_artifact when referencing an existing artifact (e.g., #xxxx from a previous agent response or file upload). "
-                        "Returns enriched JSON data with nasaPowerProperties added to each record."
+                        "Returns enriched JSON data with nasaPowerProperties added to each record. "
+                        "DO NOT use this for questions like 'What was the temperature in X?' - use query_weather instead."
                     ),
                     parameters=BatchEnrichParams
                 )
@@ -412,7 +421,6 @@ class NASAPowerAgent(IChatBioAgent):
             
             # Try to get locations from artifact first, then from raw JSON string
             if params.locations_artifact is not None:
-                # Fetch the artifact content via HTTP
                 artifact = params.locations_artifact
                 async with AsyncClient(follow_redirects=True, timeout=60) as http:
                     for url in artifact.get_urls():
