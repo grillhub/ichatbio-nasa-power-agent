@@ -28,14 +28,15 @@ class TestZarrBatch:
     
     @pytest.mark.asyncio
     @pytest.mark.parametrize("input_filename,output_filename,max_concurrent,test_name", [
-        ("example_data_v2.json", "output_zarr_batch_10concurrent.json", 10, "test_zarr_batch_10"),
-        ("example_data_v2.json", "output_zarr_batch_100concurrent.json", 100, "test_zarr_batch_100"),
-        ("example_data_v2.json", "output_zarr_batch_1000concurrent.json", 1000, "test_zarr_batch_1000"),
+        ("list_of_locations_1000_full.json", "output_zarr_batch_1000locations_10concurrent.json", 10, "test_zarr_batch_1000l_10c"),
+        ("list_of_locations_1000_full.json", "output_zarr_batch_1000locations_100concurrent.json", 100, "test_zarr_batch_1000l_100c"),
+        ("list_of_locations_1000_full.json", "output_zarr_batch_1000locations_1000concurrent.json", 1000, "test_zarr_batch_1000l_1000c"),
+        ("list_of_locations_20000_full.json", "output_zarr_batch_20000locations_100concurrent.json", 100, "test_zarr_batch_20000l_100c"),
     ])
     async def test_zarr_batch(self, input_filename, output_filename, max_concurrent, test_name):
         """Test batch fetching with async, sync, and multiprocessing"""
         test_dir = os.path.dirname(os.path.abspath(__file__))
-        input_file = os.path.join(test_dir, input_filename)
+        input_file = os.path.join(test_dir, "resources", input_filename)
         output_file = os.path.join(OUTPUT_DIR, output_filename)
         
         # Read input data
@@ -289,7 +290,7 @@ class TestZarrBatch:
         print(f"{'='*80}\n")
         
         # Add to timing report
-        add_timing_report(test_name, async_duration + mp_duration, summary)
+        # add_timing_report(test_name, async_duration + mp_duration, summary)
         
         # Assertions
         assert len(results) == len(queries), "Should return same number of results as queries"
@@ -303,14 +304,15 @@ class TestApiBatch:
     
     @pytest.mark.asyncio
     @pytest.mark.parametrize("input_filename,output_filename,max_concurrent,test_name", [
-        ("example_data_v2.json", "output_api_batch_10concurrent.json", 10, "test_api_batch_10"),
-        ("example_data_v2.json", "output_api_batch_100concurrent.json", 100, "test_api_batch_100"),
-        ("example_data_v2.json", "output_api_batch_1000concurrent.json", 1000, "test_api_batch_1000"),
+        ("list_of_locations_1000_full.json", "output_api_batch_10concurrent.json", 10, "test_api_batch_1000l_10c"),
+        ("list_of_locations_1000_full.json", "output_api_batch_100concurrent.json", 100, "test_api_batch_1000l_100c"),
+        ("list_of_locations_1000_full.json", "output_api_batch_1000concurrent.json", 1000, "test_api_batch_1000l_100c"),
+        ("list_of_locations_20000_full.json", "output_api_batch_20000locations_100concurrent.json", 100, "test_api_batch_20000l_100c"),
     ])
     async def test_api_batch(self, input_filename, output_filename, max_concurrent, test_name):
         """Test batch API fetching with async, sync, and multiprocessing"""
         test_dir = os.path.dirname(os.path.abspath(__file__))
-        input_file = os.path.join(test_dir, input_filename)
+        input_file = os.path.join(test_dir, "resources", input_filename)
         output_file = os.path.join(OUTPUT_DIR, output_filename)
         
         # Read input data
@@ -575,7 +577,7 @@ class TestApiBatch:
         print(f"{'='*80}\n")
         
         # Add to timing report
-        add_timing_report(test_name, async_duration + mp_duration, summary)
+        # add_timing_report(test_name, async_duration + mp_duration, summary)
         
         # Assertions
         assert len(results) == len(queries), "Should return same number of results as queries"
@@ -585,13 +587,13 @@ class TestApiBatch:
         assert total_successes > 0, f"At least one method should succeed (async={success_count}, mp={mp_success_count})"
 
     @pytest.mark.parametrize("input_filename,output_filename,max_processes,test_name", [
-        ("example_data_v2.json", "output_api_batch_mp_10processes.json", 10, "test_api_batch_mp_10"),
-        ("example_data_v2.json", "output_api_batch_mp_50processes.json", 50, "test_api_batch_mp_50"),
+        ("list_of_locations_1000.json", "output_api_batch_mp_10processes.json", 10, "test_api_batch_mp_10"),
+        ("list_of_locations_1000.json", "output_api_batch_mp_50processes.json", 50, "test_api_batch_mp_50"),
     ])
     def test_api_batch_multiprocessing_only(self, input_filename, output_filename, max_processes, test_name):
         """Test batch API fetching with multiprocessing only"""
         test_dir = os.path.dirname(os.path.abspath(__file__))
-        input_file = os.path.join(test_dir, input_filename)
+        input_file = os.path.join(test_dir, "resources", input_filename)
         output_file = os.path.join(OUTPUT_DIR, output_filename)
         
         # Read input data
@@ -726,7 +728,7 @@ class TestApiBatch:
             sample_results.append(sample_entry)
         
         # Write output
-         = {
+        output_data = {
             'summary': summary,
             'sample_results': sample_results,
             'all_results_count': len(mp_results)
@@ -739,7 +741,7 @@ class TestApiBatch:
         print(f"{'='*80}\n")
         
         # Add to timing report
-        add_timing_report(test_name, mp_duration, summary)
+        # add_timing_report(test_name, mp_duration, summary)
         
         # Assertions
         assert len(mp_results) == len(queries), "Should return same number of results as queries"

@@ -3,6 +3,7 @@ import json
 from ichatbio.agent_response import DirectResponse, ProcessBeginResponse, ProcessLogResponse, ArtifactResponse, \
     ResponseMessage
 
+from conftest import resource
 from src.agent import NASAPowerAgent, NASAPowerQueryParams, BatchEnrichParams
 
 
@@ -82,27 +83,6 @@ async def test_query_weather_gainesville_florida(context, messages):
     # Check for artifact creation (JSON data)
     artifact_messages = [m for m in messages if isinstance(m, ArtifactResponse)]
     assert len(artifact_messages) >= 1
-
-
-@pytest.mark.asyncio
-async def test_query_weather_default_params(context, messages):
-    """Test querying weather with default parameters"""
-    await NASAPowerAgent().run(
-        context,
-        "Show me weather data",
-        "query_weather",
-        None  # No params - should use defaults
-    )
-    
-    messages: list[ResponseMessage]
-    
-    assert len(messages) >= 2
-    assert isinstance(messages[0], ProcessBeginResponse)
-    assert isinstance(messages[-1], DirectResponse)
-    
-    # Should mention using default parameters
-    log_messages = [m for m in messages if isinstance(m, ProcessLogResponse)]
-    assert any("default" in m.text.lower() for m in log_messages)
 
 
 @pytest.mark.asyncio

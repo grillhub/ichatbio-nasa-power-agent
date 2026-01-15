@@ -1,6 +1,12 @@
+import importlib.resources
+from importlib.abc import Traversable
+
+import dotenv
 import pytest
 
 from ichatbio.agent_response import ResponseChannel, ResponseContext, ResponseMessage
+
+dotenv.load_dotenv()
 
 
 class InMemoryResponseChannel(ResponseChannel):
@@ -45,3 +51,10 @@ def context(messages) -> ResponseContext:
     within a process block are assigned the context_id ``"617727d1-4ce8-4902-884c-db786854b51c"``.
     """
     return ResponseContext(InMemoryResponseChannel(messages), TEST_CONTEXT_ID)
+
+
+def resource(*path, text=True) -> str | Traversable:
+    file = importlib.resources.files("resources").joinpath(*path)
+    if text:
+        return file.read_text()
+    return file
