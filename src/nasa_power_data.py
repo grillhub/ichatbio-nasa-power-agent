@@ -49,7 +49,7 @@ urllib3.disable_warnings()
 VALID_FREQUENCIES = ['hourly', 'daily', 'monthly']
 REF_DATE = datetime(1980, 1, 1)
 
-# Common NASA POWER parameters
+# Common NASA POWER parameters (fallback)
 COMMON_PARAMETERS = {
     'T2M': 'Temperature at 2 Meters (°C)',
     'T2M_MAX': 'Maximum Temperature at 2 Meters (°C)',
@@ -58,6 +58,43 @@ COMMON_PARAMETERS = {
     'WS2M': 'Wind Speed at 2 Meters (m/s)',
     'PS': 'Surface Pressure (kPa)',
 }
+
+# Cache for parameter metadata from API
+_PARAMETER_INFO_CACHE = None
+
+def _get_parameter_description(parameter: str) -> str:
+    """
+    Get parameter description from API metadata, with caching.
+    
+    Args:
+        parameter: Parameter ID (e.g., 'T2M')
+    
+    Returns:
+        Parameter description/name
+    """
+    global _PARAMETER_INFO_CACHE
+    
+    # Try to fetch from API if cache is empty
+    if _PARAMETER_INFO_CACHE is None:
+        try:
+            url = "https://power.larc.nasa.gov/api/website/metadata/parameters"
+            response = requests.get(url, timeout=30)
+            response.raise_for_status()
+            parameters_data = response.json()
+            
+            # Build cache
+            _PARAMETER_INFO_CACHE = {}
+            for param in parameters_data:
+                param_id = param.get('id')
+                param_name = param.get('name', 'Unknown parameter')
+                if param_id:
+                    _PARAMETER_INFO_CACHE[param_id] = param_name
+        except Exception:
+            # Fallback to COMMON_PARAMETERS
+            _PARAMETER_INFO_CACHE = COMMON_PARAMETERS.copy()
+    
+    # Return from cache or fallback
+    return _PARAMETER_INFO_CACHE.get(parameter, COMMON_PARAMETERS.get(parameter, 'Unknown parameter'))
 
 
 def _fetch_single_api_query(args: Tuple[int, Dict[str, Any], bool]) -> Tuple[int, Dict[str, Any]]:
@@ -262,8 +299,13 @@ def _fetch_single_zarr_query(args: Tuple[int, Dict[str, Any], bool]) -> Tuple[in
         if not (-180 <= longitude <= 180):
             raise ValueError('Longitude must be between -180 and 180')
         
-        # Build Zarr URL (using HTTPS endpoint)
-        zarr_url = f"https://nasa-power.s3.us-west-2.amazonaws.com/merra2/temporal/power_merra2_{frequency}_temporal_utc.zarr"
+        # Extract additional parameters with defaults
+        source = query.get('source', 'merra2')
+        temporal = query.get('temporal', 'temporal')
+        time_standard = query.get('time', 'utc')
+        
+        # Build Zarr URL dynamically based on source, frequency, temporal, and time
+        zarr_url = f"https://nasa-power.s3.us-west-2.amazonaws.com/{source}/{temporal}/power_{source}_{frequency}_{temporal}_{time_standard}.zarr"
         
         # Open dataset with xarray using fsspec mapper
         filepath_mapped = fsspec.get_mapper(zarr_url)
@@ -325,7 +367,7 @@ def _fetch_single_zarr_query(args: Tuple[int, Dict[str, Any], bool]) -> Tuple[in
         
         result = {
             'parameter': parameter,
-            'parameter_description': COMMON_PARAMETERS.get(parameter, 'Unknown parameter'),
+            'parameter_description': _get_parameter_description(parameter),
             'frequency': frequency,
             'latitude': actual_lat,
             'longitude': actual_lon,
@@ -617,7 +659,10 @@ class NASAPowerDataFetcher:
         latitude: float,
         longitude: float,
         parameter: str,
-        frequency: str = 'daily'
+        frequency: str = 'daily',
+        source: str = 'merra2',
+        temporal: str = 'temporal',
+        time: str = 'utc'
     ) -> Dict[str, Any]:
         """
         Fetch NASA POWER data from Zarr using xarray.
@@ -633,6 +678,9 @@ class NASAPowerDataFetcher:
             longitude: Longitude coordinate (-180 to 180)
             parameter: Parameter name (e.g., T2M, RH2M, PRECTOTCORR)
             frequency: Data frequency - 'hourly', 'daily', or 'monthly'
+            source: Data source (default: 'merra2', options: 'merra2', 'geosit', etc.)
+            temporal: Temporal type (default: 'temporal')
+            time: Time standard (default: 'utc')
         
         Returns:
             Dictionary containing the fetched data and metadata
@@ -664,8 +712,8 @@ class NASAPowerDataFetcher:
         if not (-180 <= longitude <= 180):
             raise ValueError('Longitude must be between -180 and 180')
         
-        # Build Zarr URL (using HTTPS endpoint)
-        zarr_url = f"https://nasa-power.s3.us-west-2.amazonaws.com/merra2/temporal/power_merra2_{frequency}_temporal_utc.zarr"
+        # Build Zarr URL dynamically based on source, frequency, temporal, and time
+        zarr_url = f"https://nasa-power.s3.us-west-2.amazonaws.com/{source}/{temporal}/power_{source}_{frequency}_{temporal}_{time}.zarr"
         
         # Open dataset with xarray using fsspec mapper
         filepath_mapped = fsspec.get_mapper(zarr_url)
@@ -727,9 +775,13 @@ class NASAPowerDataFetcher:
                     'value': value
                 })
         
+        # Get parameter description from API
+        param_info = self.get_parameter_info()
+        param_description = param_info.get(parameter, 'Unknown parameter')
+        
         return {
             'parameter': parameter,
-            'parameter_description': COMMON_PARAMETERS.get(parameter, 'Unknown parameter'),
+            'parameter_description': param_description,
             'frequency': frequency,
             'latitude': actual_lat,
             'longitude': actual_lon,
@@ -791,7 +843,10 @@ class NASAPowerDataFetcher:
                         latitude=query['latitude'],
                         longitude=query['longitude'],
                         parameter=query['parameter'],
-                        frequency=query.get('frequency', 'daily')
+                        frequency=query.get('frequency', 'daily'),
+                        source=query.get('source', 'merra2'),
+                        temporal=query.get('temporal', 'temporal'),
+                        time=query.get('time', 'utc')
                     )
                     duration_ms = (time.time() - start_time) * 1000
                     if include_timing:
@@ -1046,19 +1101,57 @@ class NASAPowerDataFetcher:
     
     def get_parameter_info(self) -> Dict[str, str]:
         """
-        Get information about common NASA POWER parameters.
+        Get information about NASA POWER parameters from the API metadata endpoint.
         
         Returns:
-            Dictionary mapping parameter names to descriptions
+            Dictionary mapping parameter IDs to their full names
         """
-        return COMMON_PARAMETERS.copy()
+        try:
+            # Fetch parameters from NASA POWER metadata API
+            url = "https://power.larc.nasa.gov/api/website/metadata/parameters"
+            response = requests.get(url, timeout=30)
+            response.raise_for_status()
+            parameters_data = response.json()
+            
+            # Convert to dict mapping id -> name
+            param_info = {}
+            for param in parameters_data:
+                param_id = param.get('id')
+                param_name = param.get('name', 'Unknown parameter')
+                if param_id:
+                    param_info[param_id] = param_name
+            
+            return param_info
+        except Exception as e:
+            # Fallback to COMMON_PARAMETERS if API fails
+            return COMMON_PARAMETERS.copy()
+    
+    def get_parameter_metadata(self) -> List[Dict[str, Any]]:
+        """
+        Get full metadata for all NASA POWER parameters from the API.
+        
+        Returns:
+            List of parameter metadata dictionaries with full information
+            (id, name, keywords, tags, availability, sources, etc.)
+        """
+        try:
+            url = "https://power.larc.nasa.gov/api/website/metadata/parameters"
+            response = requests.get(url, timeout=30)
+            response.raise_for_status()
+            return response.json()
+        except Exception as e:
+            # Return empty list if API fails
+            return []
 
 
 def enrich_locations_with_nasa_data(
     locations: List[Dict[str, Any]],
     parameters: List[str] = None,
     date_range_days: int = 1,
-    frequency: str = 'daily'
+    frequency: str = 'daily',
+    source: str = 'merra2',
+    temporal: str = 'temporal',
+    time: str = 'utc'
 ) -> List[Dict[str, Any]]:
     """
     Enrich a list of location records with NASA POWER data.
@@ -1076,6 +1169,9 @@ def enrich_locations_with_nasa_data(
         date_range_days: Number of days to fetch (default: 1 = exact event date only)
                         Use values > 1 to fetch a range around the event date
         frequency: Data frequency - 'hourly', 'daily', or 'monthly' (default: 'daily')
+        source: Data source (default: 'merra2', options: 'merra2', 'geosit', etc.)
+        temporal: Temporal type (default: 'temporal')
+        time: Time standard (default: 'utc')
     
     Returns:
         List of enriched location records with added 'nasaPowerProperties' field
@@ -1137,7 +1233,10 @@ def enrich_locations_with_nasa_data(
                 'latitude': float(latitude),
                 'longitude': float(longitude),
                 'parameter': parameter,
-                'frequency': frequency
+                'frequency': frequency,
+                'source': source,
+                'temporal': temporal,
+                'time': time
             })
             location_query_map.append((loc_idx, param_idx))
     
@@ -1187,7 +1286,6 @@ def enrich_locations_with_nasa_data(
         enriched_locations.append(enriched_record)
     
     return enriched_locations
-
 
 # Convenience function for direct usage
 # def fetch_nasa_power_data(

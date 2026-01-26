@@ -1,5 +1,6 @@
 import pytest
 import json
+import ichatbio.types
 from ichatbio.agent_response import DirectResponse, ProcessBeginResponse, ProcessLogResponse, ArtifactResponse, \
     ResponseMessage
 
@@ -132,11 +133,14 @@ async def test_query_weather_date_range(context, messages):
     assert "6" in response_text or "Data Points" in response_text
 
 
+@pytest.mark.httpx_mock(
+    should_mock=lambda request: request.url == "https://artifact.test/florida"
+)
 @pytest.mark.asyncio
-async def test_enrich_locations_multiple_florida_cities(context, messages):
+async def test_enrich_locations_multiple_florida_cities(context, messages, httpx_mock):
     """Test enriching multiple cities in Florida on a single date"""
     # Multiple cities in Florida on December 25, 2024
-    locations_json = json.dumps([
+    locations_data = [
         {
             "eventDate": "2024-12-25T00:00",
             "decimalLatitude": 29.6516,  # Gainesville
@@ -162,10 +166,18 @@ async def test_enrich_locations_multiple_florida_cities(context, messages):
             "decimalLatitude": 26.1224,  # Fort Myers
             "decimalLongitude": -81.9353
         }
-    ])
+    ]
+    locations_json = json.dumps(locations_data)
+    httpx_mock.add_response(url="https://artifact.test/florida", text=locations_json)
     
     params = BatchEnrichParams(
-        locations_json=locations_json,
+        locations_artifact=ichatbio.types.Artifact(
+            local_id="#0000",
+            description="Florida cities locations",
+            mimetype="application/json",
+            uris=["https://artifact.test/florida"],
+            metadata={},
+        ),
         weather_parameters=['T2M'],
         date_range_days=1,
         frequency='daily'
@@ -203,12 +215,15 @@ async def test_enrich_locations_multiple_florida_cities(context, messages):
     assert artifact.mimetype == "application/json"
 
 
+@pytest.mark.httpx_mock(
+    should_mock=lambda request: request.url == "https://artifact.test/json_array"
+)
 @pytest.mark.asyncio
-async def test_enrich_locations_with_json_array(context, messages):
+async def test_enrich_locations_with_json_array(context, messages, httpx_mock):
     """Test enriching an array of JSON locations with NASA POWER temperature data"""
     
     # The JSON array provided by the user
-    locations_json = json.dumps([
+    locations_data = [
         {
             "eventDate": "2005-12-16T09:41",
             "decimalLatitude": -47.428486,
@@ -254,10 +269,18 @@ async def test_enrich_locations_with_json_array(context, messages):
             "decimalLatitude": -21.524045,
             "decimalLongitude": -66.896778
         }
-    ])
+    ]
+    locations_json = json.dumps(locations_data)
+    httpx_mock.add_response(url="https://artifact.test/json_array", text=locations_json)
     
     params = BatchEnrichParams(
-        locations_json=locations_json,
+        locations_artifact=ichatbio.types.Artifact(
+            local_id="#0001",
+            description="JSON array locations",
+            mimetype="application/json",
+            uris=["https://artifact.test/json_array"],
+            metadata={},
+        ),
         weather_parameters=['T2M'],
         date_range_days=1,
         frequency='daily'
@@ -295,11 +318,14 @@ async def test_enrich_locations_with_json_array(context, messages):
     assert artifact.mimetype == "application/json"
 
 
+@pytest.mark.httpx_mock(
+    should_mock=lambda request: request.url == "https://artifact.test/multi_params"
+)
 @pytest.mark.asyncio
-async def test_enrich_locations_with_multiple_parameters(context, messages):
+async def test_enrich_locations_with_multiple_parameters(context, messages, httpx_mock):
     """Test enriching locations with multiple NASA POWER parameters (T2M and RH2M)"""
     
-    locations_json = json.dumps([
+    locations_data = [
         {
             "eventDate": "2023-04-02T10:39",
             "decimalLatitude": -50.948586,
@@ -310,10 +336,18 @@ async def test_enrich_locations_with_multiple_parameters(context, messages):
             "decimalLatitude": -21.524045,
             "decimalLongitude": -66.896778
         }
-    ])
+    ]
+    locations_json = json.dumps(locations_data)
+    httpx_mock.add_response(url="https://artifact.test/multi_params", text=locations_json)
     
     params = BatchEnrichParams(
-        locations_json=locations_json,
+        locations_artifact=ichatbio.types.Artifact(
+            local_id="#0002",
+            description="Multi-parameter locations",
+            mimetype="application/json",
+            uris=["https://artifact.test/multi_params"],
+            metadata={},
+        ),
         weather_parameters=['T2M', 'RH2M'],  # Temperature and Humidity
         date_range_days=1,
         frequency='daily'

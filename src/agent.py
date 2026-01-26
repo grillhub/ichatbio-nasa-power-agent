@@ -11,16 +11,19 @@ from starlette.applications import Starlette
 
 from .nasa_power_data import NASAPowerDataFetcher, COMMON_PARAMETERS, enrich_locations_with_nasa_data
 from .util import (
-    retrieve_artifact_content, 
-    parse_locations_json, 
-    extract_json_schema, 
+    retrieve_artifact_content,
+    parse_locations_json,
+    extract_json_schema,
     select_location_properties,
     LocationPropertyPaths,
+    LocationStringPaths,
+    GeoJSONCoordinatesPaths,
     GiveUp,
-    read_path
+    read_path,
+    parse_location_string,
+    parse_geojson_coordinates,
+    try_extract_locations_heuristic,
 )
-from .plot import render_points_as_geojson
-
 
 class NASAPowerQueryParams(BaseModel):
     """Parameters for querying NASA POWER data"""
@@ -31,15 +34,21 @@ class NASAPowerQueryParams(BaseModel):
     start_date: Optional[str] = Field(None)
     end_date: Optional[str] = Field(None)
     frequency: str = Field(default="daily")
+    source: str = Field(default="merra2")
+    temporal: str = Field(default="temporal")
+    time: str = Field(default="utc")
 
 class BatchEnrichParams(BaseModel):
     """Parameters for batch enrichment of location records"""
 
     locations_artifact: Optional[Artifact] = Field(default=None)
-    locations_json: Optional[str] = Field(default=None)
+    # locations_json: Optional[str] = Field(default=None)
     weather_parameters: List[str] = Field(default=['T2M'])
     date_range_days: int = Field(default=1)
     frequency: str = Field(default="daily")
+    source: str = Field(default="merra2")
+    temporal: str = Field(default="temporal")
+    time: str = Field(default="utc")
 
 
 class NASAPowerAgent(IChatBioAgent):
@@ -88,11 +97,11 @@ class NASAPowerAgent(IChatBioAgent):
                 AgentEntrypoint(
                     id="enrich_locations",
                     description=(
-                        "Enriches location records with NASA POWER weather data. "
-                        "Returns enriched JSON data with nasaPowerProperties added to each record. "
+                        "Enriches or adds NASA POWER data (e.g. temperature at 2m T2M/T2M_MAX/T2M_MIN, humidity RH2M, wind speed WS2M, surface pressure PS) to location records. "
+                        "The enriched data is written to the artifact only; each record gets nasaPowerProperties. "
                         "Parameters: "
                         "locations_artifact - Use this when referencing an EXISTING artifact (e.g., #xxxx from a previous agent response or file upload). This is the DEFAULT and PREFERRED method for production use. "
-                        "locations_json - ONLY use this for TESTING or TEST PURPOSE when the user explicitly mentions testing, test purpose, or provides JSON directly in chat. Pass the JSON array string containing location records with eventDate, decimalLatitude, and decimalLongitude fields. "
+                        # "locations_json - ONLY use this for TESTING or TEST PURPOSE when the user explicitly mentions testing, test purpose, or provides JSON directly in chat. Pass the JSON array string containing location records with eventDate, decimalLatitude, and decimalLongitude fields. "
                         "weather_parameters - List of NASA POWER parameters to fetch (e.g., T2M, RH2M). "
                         "date_range_days - Number of days to fetch (1 = exact event date only, >1 = range around event). (Default: 1)"
                         "frequency - Data frequency: hourly, daily, or monthly. (Default: daily)"
@@ -184,7 +193,10 @@ class NASAPowerAgent(IChatBioAgent):
                                 'latitude': loc['latitude'],
                                 'longitude': loc['longitude'],
                                 'parameter': params.parameter,
-                                'frequency': params.frequency
+                                'frequency': params.frequency,
+                                'source': params.source,
+                                'temporal': params.temporal,
+                                'time': params.time
                             })
                     else:
                         # Single location but date range: create query for each day
@@ -197,7 +209,10 @@ class NASAPowerAgent(IChatBioAgent):
                                 'latitude': locations[0]['latitude'],
                                 'longitude': locations[0]['longitude'],
                                 'parameter': params.parameter,
-                                'frequency': params.frequency
+                                'frequency': params.frequency,
+                                'source': params.source,
+                                'temporal': params.temporal,
+                                'time': params.time
                             })
                             current_date += timedelta(days=1)
                     
@@ -235,9 +250,13 @@ class NASAPowerAgent(IChatBioAgent):
                         
                         # Create combined result
                         if successful_results:
+                            # Get parameter description from API
+                            param_info = self.data_fetcher.get_parameter_info()
+                            param_description = param_info.get(params.parameter, successful_results[0].get('parameter_description', 'Unknown parameter'))
+                            
                             combined_data = {
                                 'parameter': params.parameter,
-                                'parameter_description': successful_results[0].get('parameter_description', COMMON_PARAMETERS.get(params.parameter, 'Unknown parameter')),
+                                'parameter_description': param_description,
                                 'frequency': params.frequency,
                                 'latitude': successful_results[0]['latitude'],
                                 'longitude': successful_results[0]['longitude'],
@@ -350,7 +369,10 @@ class NASAPowerAgent(IChatBioAgent):
                         latitude=locations[0]['latitude'],
                         longitude=locations[0]['longitude'],
                         parameter=params.parameter,
-                        frequency=params.frequency
+                        frequency=params.frequency,
+                        source=params.source,
+                        temporal=params.temporal,
+                        time=params.time
                     )
                     
                     num_data_points = len(data['data'])
@@ -406,15 +428,49 @@ class NASAPowerAgent(IChatBioAgent):
         async with context.begin_process(summary="Listing available NASA POWER parameters") as process:
             process: IChatBioAgentProcess
             
-            await process.log("Retrieving available parameters from NASA POWER dataset")
+            await process.log("Retrieving available parameters from NASA POWER API metadata endpoint")
             
-            # Get parameter information
-            param_info = self.data_fetcher.get_parameter_info()
+            # Get parameter metadata from API
+            param_metadata = self.data_fetcher.get_parameter_metadata()
             
-            # Format the response
-            response = "**Available NASA POWER Parameters:**\n\n"
-            for param, description in sorted(param_info.items()):
-                response += f"**{param}**\n  {description}\n\n"
+            if not param_metadata:
+                # Fallback to simple parameter info if API fails
+                param_info = self.data_fetcher.get_parameter_info()
+                response = "**Available NASA POWER Parameters:**\n\n"
+                for param, description in sorted(param_info.items()):
+                    response += f"**{param}**\n  {description}\n\n"
+            else:
+                # Format parameters: extract only name, keywords, and sources
+                formatted_params = {}
+                for param in param_metadata:
+                    param_id = param.get('id')
+                    sources = param.get('sources', [])
+                    
+                    if param_id and 'merra2' in sources:
+                        formatted_params[param_id] = {
+                            "name": param.get('name', 'Unknown parameter'),
+                            "keywords": param.get('keywords', [])
+                        }
+                
+                # Process log the formatted parameters
+                await process.log(
+                    f"Formatted {len(formatted_params)} parameters",
+                    data={"formatted_parameters": formatted_params}
+                )
+                
+                # Format the response for user
+                response = "**Available NASA POWER Parameters:**\n\n"
+                for param_id, param_data in sorted(formatted_params.items()):
+                    param_name = param_data.get('name', 'Unknown parameter')
+                    keywords = param_data.get('keywords', [])
+                    sources = param_data.get('sources', [])
+                    
+                    response += f"**{param_id}** - {param_name}\n"
+                    if keywords:
+                        response += f"  Keywords: {', '.join(keywords)}\n"
+                    if sources:
+                        response += f"  Sources: {', '.join(sources)}\n"
+                    response += "\n"
             
             response += "\nYou can query any of these parameters using the `query_weather` entrypoint."
             
@@ -432,19 +488,19 @@ class NASAPowerAgent(IChatBioAgent):
             locations = None
             
             # Only use locations_json for testing purposes
-            if params.locations_json is not None:
-                await process.log("Using locations from provided JSON string")
+            # if params.locations_json is not None:
+            #     await process.log("Using locations from provided JSON string")
                 
-                # Parse the JSON content to get locations array
-                try:
-                    locations = await parse_locations_json(params.locations_json, process)
-                except json.JSONDecodeError as e:
-                    await context.reply(f"Error: Invalid JSON in location data: {str(e)}. Please ensure the JSON is a valid array of location records.")
-                    return
-                except ValueError as e:
-                    await context.reply(f"Error: {str(e)}")
-                    return
-            elif params.locations_artifact is not None:
+            #     # Parse the JSON content to get locations array
+            #     try:
+            #         locations = await parse_locations_json(params.locations_json, process)
+            #     except json.JSONDecodeError as e:
+            #         await context.reply(f"Error: Invalid JSON in location data: {str(e)}. Please ensure the JSON is a valid array of location records.")
+            #         return
+            #     except ValueError as e:
+            #         await context.reply(f"Error: {str(e)}")
+            #         return
+            if params.locations_artifact is not None:
                 try:
                     locations = await retrieve_artifact_content(params.locations_artifact, process)
                     
@@ -452,11 +508,14 @@ class NASAPowerAgent(IChatBioAgent):
                     schema = extract_json_schema(locations)
                     await process.log("Extracted JSON schema from artifact content")
                     
-                    match await select_location_properties(request, schema):
+                    selection_result = await select_location_properties(request, schema)
+                    
+                    match selection_result:
                         case LocationPropertyPaths() as paths:
                             await process.log(
-                                "Using the following property paths",
+                                "Using scalar field paths for location extraction",
                                 data={
+                                    "format": "scalar_fields",
                                     "latitude": paths.latitude,
                                     "longitude": paths.longitude,
                                     "date": paths.date,
@@ -478,18 +537,91 @@ class NASAPowerAgent(IChatBioAgent):
                                         "eventDate": str(date) if date is not None else None,
                                     })
                             
-                            await process.log(f"Extracted {len(locations)} location records using property paths")
+                            await process.log(f"Extracted {len(locations)} location records using scalar field paths")
+                        
+                        case LocationStringPaths() as paths:
+                            await process.log(
+                                "Using location string path for location extraction",
+                                data={
+                                    "format": "location_string",
+                                    "location_string": paths.location_string,
+                                    "date": paths.date,
+                                },
+                            )
+                            
+                            # Extract values using the paths
+                            location_strings = list(read_path(locations, paths.location_string))
+                            dates = list(read_path(locations, paths.date))
+                            
+                            # Parse location strings and reconstruct locations array
+                            locations = []
+                            for loc_str, date in zip(location_strings, dates):
+                                parsed = parse_location_string(loc_str)
+                                if parsed is not None and date is not None:
+                                    lat, lon = parsed
+                                    locations.append({
+                                        "decimalLatitude": lat,
+                                        "decimalLongitude": lon,
+                                        "eventDate": str(date) if date is not None else None,
+                                    })
+                            
+                            await process.log(f"Extracted {len(locations)} location records using location string format")
+                        
+                        case GeoJSONCoordinatesPaths() as paths:
+                            await process.log(
+                                "Using GeoJSON coordinates path for location extraction",
+                                data={
+                                    "format": "geojson_coordinates",
+                                    "coordinates": paths.coordinates,
+                                    "date": paths.date,
+                                },
+                            )
+                            
+                            # Extract values using the paths
+                            coordinates_list = list(read_path(locations, paths.coordinates))
+                            dates = list(read_path(locations, paths.date))
+                            
+                            # Parse GeoJSON coordinates and reconstruct locations array
+                            locations = []
+                            for coords, date in zip(coordinates_list, dates):
+                                parsed = parse_geojson_coordinates(coords)
+                                if parsed is not None and date is not None:
+                                    lat, lon = parsed
+                                    locations.append({
+                                        "decimalLatitude": lat,
+                                        "decimalLongitude": lon,
+                                        "eventDate": str(date) if date is not None else None,
+                                    })
+                            
+                            await process.log(f"Extracted {len(locations)} location records using GeoJSON coordinates format")
                             
                         case GiveUp(reason=reason):
                             await process.log(f"Failed to identify location property paths: {reason}")
-                            await process.log("Attempting to use direct field access (eventDate, decimalLatitude, decimalLongitude)")
-                            # Fall through to validation below
+                            await process.log(
+                                "Attempting heuristic extraction for iNaturalist-like JSON "
+                                "(geojson.coordinates, location string, observed_on/time_observed_at)"
+                            )
+                            extracted = try_extract_locations_heuristic(locations)
+                            if extracted is not None:
+                                locations = extracted
+                                await process.log(
+                                    f"Extracted {len(locations)} location records using heuristic fallback"
+                                )
+                            else:
+                                await context.reply(
+                                    "Error: Could not extract location records from the artifact. "
+                                    "The schema supports: separate latitude/longitude fields, a 'latitude,longitude' "
+                                    "string (e.g. `location`), or GeoJSON `coordinates` [lon,lat]. "
+                                    "A heuristic for iNaturalist-like JSON (e.g. `results[].geojson.coordinates`, "
+                                    "`results[].location`, `observed_on`) also did not find any valid records."
+                                )
+                                return
                             
                 except ValueError:
                     await context.reply("Error: Failed to retrieve the locations artifact content.")
                     return
             else:
-                await context.reply("Error: No location data provided. Please provide either locations_artifact or locations_json.")
+                await context.reply("Error: No location data provided. Please provide either locations_artifact.")
                 return
             
             # Validate that locations is a list
@@ -523,7 +655,10 @@ class NASAPowerAgent(IChatBioAgent):
                     locations=locations,
                     parameters=weather_parameters,
                     date_range_days=date_range_days,
-                    frequency=frequency
+                    frequency=frequency,
+                    source=params.source,
+                    temporal=params.temporal,
+                    time=params.time
                 )
                 
                 successful = sum(1 for loc in enriched_locations if loc.get('nasaPowerProperties') is not None)
@@ -564,7 +699,10 @@ class NASAPowerAgent(IChatBioAgent):
                                 if data_list and len(data_list) > 0:
                                     value = data_list[0].get('value')
                                     date = data_list[0].get('date', 'N/A')
-                                    param_values.append(f"{param}={value:.2f} ({date})")
+                                    if value is not None:
+                                        param_values.append(f"{param}={value:.2f} ({date})")
+                                    else:
+                                        param_values.append(f"{param}=N/A ({date})")
                         
                         if param_values:
                             location_info += f"\n  Parameters: {', '.join(param_values)}"
@@ -573,55 +711,26 @@ class NASAPowerAgent(IChatBioAgent):
                     else:
                         location_info += "\n  No NASA POWER data available"
                     
-                    await process.log(location_info)
+                    # await process.log(location_info)
                 
-                # Create GeoJSON artifact from enriched locations
+                # Create artifact from enriched locations data
                 try:
-                    coordinates = []
-                    parameter_data_list = []
-                    for loc in enriched_locations:
-                        lat = loc.get('decimalLatitude')
-                        lon = loc.get('decimalLongitude')
-                        if lat is not None and lon is not None:
-                            try:
-                                coordinates.append((float(lat), float(lon)))
-                                
-                                # Extract all nasaPowerProperties for this location
-                                nasa_props = loc.get('nasaPowerProperties')
-                                param_data = []
-                                if nasa_props and isinstance(nasa_props, list):
-                                    for nasa_data in nasa_props:
-                                        if isinstance(nasa_data, dict):
-                                            # Extract parameter info with description and value
-                                            param_info = {
-                                                'parameter': nasa_data.get('parameter'),
-                                                'parameter_description': nasa_data.get('parameter_description', ''),
-                                                'data': nasa_data.get('data', [])
-                                            }
-                                            param_data.append(param_info)
-                                
-                                parameter_data_list.append(param_data)
-                            except (ValueError, TypeError) as e:
-                                await process.log(f"Skipping invalid coordinate: {e}")
-                                continue
-                    
-                    if coordinates:
-                        geo = render_points_as_geojson(coordinates, parameter_data=parameter_data_list)
-                        await process.create_artifact(
-                            mimetype="application/json",
-                            description=f"GeoJSON points for locations enriched with NASA POWER data",
-                            content=json.dumps(geo).encode("utf-8"),
-                            metadata={
-                                "format": "geojson",
-                                "source": "NASA POWER",
-                                "parameters": weather_parameters,
-                                "frequency": frequency,
-                                "total_points": len(coordinates)
-                            }
-                        )
-                        await process.log(f"Created GeoJSON artifact with {len(coordinates)} points")
+                    await process.create_artifact(
+                        mimetype="application/json",
+                        description=f"Location records enriched with NASA POWER data",
+                        content=json.dumps(enriched_locations).encode("utf-8"),
+                        metadata={
+                            "format": "json",
+                            "source": "NASA POWER",
+                            "parameters": weather_parameters,
+                            "frequency": frequency,
+                            "total_records": len(enriched_locations),
+                            "enriched_records": successful
+                        }
+                    )
+                    await process.log(f"Created artifact with {len(enriched_locations)} enriched location records")
                 except Exception as e:
-                    await process.log(f"Warning: Failed to create GeoJSON artifact: {str(e)}")
+                    await process.log(f"Warning: Failed to create artifact: {str(e)}")
                 
                 # Format a summary
                 if date_range_days == 1:
@@ -653,7 +762,7 @@ class NASAPowerAgent(IChatBioAgent):
                             value_str = f"{first_data['value']:.2f}" if first_data['value'] is not None else "null"
                             summary += f"  - {nasa_data.get('parameter')}: {first_data['date']} = {value_str}\n"
                 
-                summary += "\nGeoJSON artifact with enriched location points is available."
+                summary += "\nArtifact with enriched location records is available."
                 
                 await context.reply(summary)
                 
