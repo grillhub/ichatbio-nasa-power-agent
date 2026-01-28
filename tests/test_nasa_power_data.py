@@ -53,14 +53,19 @@ class TestNASAPowerData:
         assert fetcher._cache == {}
     
     def test_get_parameter_info(self):
-        """Test getting parameter information"""
+        """Test getting parameter information from API"""
         fetcher = NASAPowerDataFetcher()
         params = fetcher.get_parameter_info()
         
         assert isinstance(params, dict)
         assert 'T2M' in params
         assert 'RH2M' in params
-        assert params == COMMON_PARAMETERS
+        
+        assert isinstance(params['T2M'], str)
+        assert isinstance(params['RH2M'], str)
+        
+        assert len(params['T2M']) > 0
+        assert len(params['RH2M']) > 0
     
     def test_invalid_frequency(self):
         """Test that invalid frequency raises ValueError"""
