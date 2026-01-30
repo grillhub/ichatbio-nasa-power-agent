@@ -4,45 +4,8 @@ An iChatBio agent that provides access to NASA's Prediction Of Worldwide Energy 
 
 ## Features
 
-- Query weather and climate data for any location worldwide
-- Access multiple parameters including temperature, humidity, precipitation, wind speed, and solar radiation
-- Data sourced from NASA's MERRA-2
-- Support for multiple locations and date ranges in single queries
-
-## Quick Start
-
-*Requires Python 3.12 or higher*
-
-### Installation
-
-```bash
-# Clone or navigate to project directory
-cd /path/to/ichatbio-nasa-power-agent
-
-# Install dependencies (this also installs the package)
-pip install -e .
-```
-
-### Run the Server
-
-```bash
-# Start the agent server (CORRECT command)
-uvicorn src.agent:create_app --factory --reload --host "0.0.0.0" --port 9999
-```
-
-**Note**: The command in older documentation using `--app-dir src` doesn't work due to relative import issues. Use the command above.
-
-### Verify It's Working
-
-Visit: http://localhost:9999/.well-known/agent.json
-
-You should see the agent card with available entrypoints.
-
-### Run with Docker
-
-```bash
-docker compose up --build
-```
+- **Enrich location datasets** — attach NASA POWER data to existing records (e.g. species occurrences, field observations) via artifact input; outputs enriched records with `nasaPowerProperties`
+- **Multiple parameters** — temperature (T2M, T2M_MAX, T2M_MIN), humidity (RH2M), wind speed (WS2M), surface pressure (PS), and more; use `list_parameters` for the full catalog
 
 ## Available Parameters
 
