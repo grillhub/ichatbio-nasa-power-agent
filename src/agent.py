@@ -9,7 +9,7 @@ from ichatbio.types import AgentCard, AgentEntrypoint, Artifact
 from pydantic import BaseModel, Field
 from starlette.applications import Starlette
 
-from .nasa_power_data import NASAPowerDataFetcher, COMMON_PARAMETERS, enrich_locations_with_nasa_data
+from .nasa_power_data import NASAPowerDataFetcher, COMMON_PARAMETERS, enrich_locations_with_nasa_data, has_valid_nasa_power_data
 from .util import (
     retrieve_artifact_content,
     parse_locations_json,
@@ -661,16 +661,22 @@ class NASAPowerAgent(IChatBioAgent):
                     time=params.time
                 )
                 
-                successful = sum(1 for loc in enriched_locations if loc.get('nasaPowerProperties') is not None)
+                successful = sum(1 for loc in enriched_locations if has_valid_nasa_power_data(loc))
                 skipped = len(enriched_locations) - successful
-                
+                valid_enriched_locations = [loc for loc in enriched_locations if has_valid_nasa_power_data(loc)]
+                artifact_locations = []
+                for loc in enriched_locations:
+                    rec = dict(loc)
+                    if not has_valid_nasa_power_data(loc):
+                        rec["nasaPowerProperties"] = None
+                    artifact_locations.append(rec)
+
                 await process.log(
                     f"Successfully enriched {successful} records\n"
                     f"Skipped {skipped} records (missing data)"
                 )
-                
                 await process.log(
-                    f"Enriched {len(enriched_locations)} location records with NASA POWER data",
+                    f"Enriched {successful} location records with NASA POWER data (out of {len(enriched_locations)} total)",
                     data={
                         "source": "NASA POWER",
                         "parameters": weather_parameters,
@@ -679,7 +685,6 @@ class NASAPowerAgent(IChatBioAgent):
                         "enriched_records": successful
                     }
                 )
-                
                 # Log each location's data
                 for i, loc in enumerate(enriched_locations):
                     event_date = loc.get('eventDate', 'N/A')
@@ -713,12 +718,12 @@ class NASAPowerAgent(IChatBioAgent):
                     
                     # await process.log(location_info)
                 
-                # Create artifact from enriched locations data
+                # Create artifact from enriched locations data (all records; nasaPowerProperties = null where data has null values)
                 try:
                     await process.create_artifact(
                         mimetype="application/json",
                         description=f"Location records enriched with NASA POWER data",
-                        content=json.dumps(enriched_locations).encode("utf-8"),
+                        content=json.dumps(artifact_locations).encode("utf-8"),
                         metadata={
                             "format": "json",
                             "source": "NASA POWER",
@@ -728,7 +733,7 @@ class NASAPowerAgent(IChatBioAgent):
                             "enriched_records": successful
                         }
                     )
-                    await process.log(f"Created artifact with {len(enriched_locations)} enriched location records")
+                    await process.log(f"Created artifact with {len(artifact_locations)} location records ({successful} enriched, {skipped} skipped)")
                 except Exception as e:
                     await process.log(f"Warning: Failed to create artifact: {str(e)}")
                 
@@ -747,9 +752,9 @@ class NASAPowerAgent(IChatBioAgent):
                     f"**Date Range:** {date_info}\n"
                     f"**Frequency:** {frequency}\n\n"
                 )
-                
-                # Show sample enriched records
-                valid_records = [loc for loc in enriched_locations if loc.get('nasaPowerProperties') is not None]
+
+                # Show sample enriched records (only those with valid non-null data)
+                valid_records = valid_enriched_locations
                 if valid_records:
                     summary += "**Sample Enriched Record:**\n"
                     sample = valid_records[0]
