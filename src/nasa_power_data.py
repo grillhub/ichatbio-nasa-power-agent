@@ -319,7 +319,6 @@ def _fetch_single_zarr_query(args: Tuple[int, Dict[str, Any], bool]) -> Tuple[in
                 f'Available parameters: {", ".join(available)}'
             )
         
-        # Select data for the location (nearest grid point) and time range
         data_slice = ds[parameter].sel(
             lat=latitude,
             lon=longitude,
@@ -371,8 +370,8 @@ def _fetch_single_zarr_query(args: Tuple[int, Dict[str, Any], bool]) -> Tuple[in
             'frequency': frequency,
             'latitude': actual_lat,
             'longitude': actual_lon,
-            'data': values,
-            'source': 'zarr_multiprocessing'
+            'data': values
+            # 'source': 'zarr_multiprocessing'
         }
         
         duration_ms = (time.time() - start_time) * 1000
@@ -727,8 +726,8 @@ class NASAPowerDataFetcher:
                 f'Available parameters: {", ".join(available)}'
             )
         
-        # Select data for the location (nearest grid point) and time range
-        # First select nearest lat/lon, then slice time
+        # Select data for the location (nearest grid point) and time range.
+        # First select nearest lat/lon, then slice time. start_dt/end_dt from "YYYY-MM-DD"; inclusive.
         data_slice = ds[parameter].sel(
             lat=latitude,
             lon=longitude,
@@ -1144,6 +1143,31 @@ class NASAPowerDataFetcher:
             return []
 
 
+def _nasa_properties_has_any_data(props: Optional[List[Dict[str, Any]]]) -> bool:
+    """Return True if nasaPowerProperties has at least one non-empty data array."""
+    if not props or not isinstance(props, list):
+        return False
+    for param_block in props:
+        if isinstance(param_block, dict) and (param_block.get("data") or []):
+            return True
+    return False
+
+
+def has_valid_nasa_power_data(record: Dict[str, Any]) -> bool:
+    """Return True if record has nasaPowerProperties with all non-null values."""
+    props = record.get("nasaPowerProperties")
+    if not props or not isinstance(props, list):
+        return False
+    for param_block in props:
+        if not isinstance(param_block, dict):
+            continue
+        data_list = param_block.get("data") or []
+        for point in data_list:
+            if isinstance(point, dict) and point.get("value") is None:
+                return False
+    return True
+
+
 def enrich_locations_with_nasa_data(
     locations: List[Dict[str, Any]],
     parameters: List[str] = None,
@@ -1174,7 +1198,10 @@ def enrich_locations_with_nasa_data(
         time: Time standard (default: 'utc')
     
     Returns:
-        List of enriched location records with added 'nasaPowerProperties' field
+        List of enriched location records with added:
+        - nasaPowerProperties: NASA POWER data (or None if skipped)
+        - originalDate: raw eventDate from API before parsing (unchanged from input)
+        - eventDate: normalized to YYYY-MM-DD for successfully processed locations
     """
     if parameters is None:
         parameters = ['T2M']  # Default to temperature
@@ -1185,6 +1212,7 @@ def enrich_locations_with_nasa_data(
     queries = []
     location_query_map = []  # Maps query index to (location_index, parameter_index)
     location_validity = []  # Track which locations are valid for processing
+    location_center_dates = [None] * len(locations)  # Normalized date (YYYY-MM-DD) per location
     
     # First pass: validate locations and prepare queries
     for loc_idx, location in enumerate(locations):
@@ -1197,14 +1225,23 @@ def enrich_locations_with_nasa_data(
             location_validity.append(False)
             continue
         
-        # Parse the event date (handle various ISO formats)
         try:
-            # Extract just the date part from ISO datetime
-            if 'T' in event_date:
-                date_str = event_date.split('T')[0]
+            raw = str(event_date).strip()
+            # Take first segment if range (e.g. "2007-06-19/2007-06-20" → "2007-06-19")
+            if '/' in raw:
+                raw = raw.split('/')[0].strip()
+            # Strip datetime: take date part only (before "T" or space)
+            if 'T' in raw:
+                date_str = raw.split('T')[0].strip()
+            elif ' ' in raw:
+                date_str = raw.split(' ')[0].strip()
             else:
-                date_str = event_date
-            
+                date_str = raw
+            # Year-only (e.g. "1940", "1939"): use January 1st so we can query NASA data
+            if len(date_str) == 4 and date_str.isdigit():
+                date_str = f"{date_str}-01-01"
+            elif len(date_str) >= 10:
+                date_str = date_str[:10]
             center_date = datetime.strptime(date_str, "%Y-%m-%d")
         except (ValueError, AttributeError):
             # Invalid date format
@@ -1213,6 +1250,7 @@ def enrich_locations_with_nasa_data(
         
         # Location is valid
         location_validity.append(True)
+        location_center_dates[loc_idx] = center_date
         
         # Calculate date range
         if date_range_days == 1:
@@ -1275,10 +1313,15 @@ def enrich_locations_with_nasa_data(
     enriched_locations = []
     for loc_idx, location in enumerate(locations):
         enriched_record = location.copy()
+        enriched_record['originalDate'] = location.get('eventDate')
         
         if location_validity[loc_idx] and loc_idx in location_results:
             # This location had valid data and was processed
-            enriched_record['nasaPowerProperties'] = location_results[loc_idx]
+            props = location_results[loc_idx]
+            enriched_record['nasaPowerProperties'] = props if _nasa_properties_has_any_data(props) else None
+            # Normalize eventDate to YYYY-MM-DD (e.g. "2025-12-14" not "2025-12-14T13:50:53-08:00")
+            if location_center_dates[loc_idx] is not None:
+                enriched_record['eventDate'] = location_center_dates[loc_idx].strftime("%Y-%m-%d")
         else:
             # This location was skipped (invalid data)
             enriched_record['nasaPowerProperties'] = None

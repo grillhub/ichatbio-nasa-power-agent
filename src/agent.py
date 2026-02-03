@@ -25,24 +25,17 @@ from .util import (
     try_extract_locations_heuristic,
 )
 
-class NASAPowerQueryParams(BaseModel):
-    """Parameters for querying NASA POWER data"""
-    latitude: Optional[float] = Field(None, ge=-90, le=90)
-    longitude: Optional[float] = Field(None, ge=-180, le=180)
-    locations: Optional[List[dict[str, float]]] = Field(None)
-    parameter: str = Field(default="T2M")
-    start_date: Optional[str] = Field(None)
-    end_date: Optional[str] = Field(None)
-    frequency: str = Field(default="daily")
-    source: str = Field(default="merra2")
-    temporal: str = Field(default="temporal")
-    time: str = Field(default="utc")
+DESCRIPTION = """\
+This agent can do the following:
+- List available NASA POWER parameters: Returns a complete list of all available NASA POWER parameters with their full descriptions. Use this to show/list/display/get all weather and climate parameters (like T2M for temperature, RH2M for humidity, PRECTOTCORR for precipitation, etc.) from the NASA POWER dataset.
+- Enrich locations: Enriches or adds NASA POWER data (e.g. temperature at 2m T2M) to location records. The enriched data is written to the artifact only; each record gets nasaPowerProperties.
+
+To use this agent, provide an artifact local_id with location records containing latitude, longitude, and date information. The agent will extract location data from the artifact and enrich it with NASA POWER weather and climate data.
+"""
 
 class BatchEnrichParams(BaseModel):
-    """Parameters for batch enrichment of location records"""
 
     locations_artifact: Optional[Artifact] = Field(default=None)
-    # locations_json: Optional[str] = Field(default=None)
     weather_parameters: List[str] = Field(default=['T2M'])
     date_range_days: int = Field(default=1)
     frequency: str = Field(default="daily")
@@ -52,13 +45,11 @@ class BatchEnrichParams(BaseModel):
 
 
 class NASAPowerAgent(IChatBioAgent):
-    """
-    NASA POWER Data Agent - Provides access to NASA's weather and climate data.
-    """
 
     def __init__(self):
         super().__init__()
         self.data_fetcher = NASAPowerDataFetcher()
+        self._cached_parameters = None
 
     @override
     def get_agent_card(self) -> AgentCard:
@@ -66,46 +57,10 @@ class NASAPowerAgent(IChatBioAgent):
             name="NASA POWER Data Agent",
             description="Access NASA's Prediction Of Worldwide Energy Resources (POWER) weather and climate data for any location worldwide.",
             icon="https://earthdata.nasa.gov/s3fs-public/2022-11/power_logo_event.png",
-            url="http://localhost:9999",
             entrypoints=[
                 AgentEntrypoint(
-                    id="query_weather",
-                    description="",
-                    # description=(
-                    #     "Query weather and climate data for one or more locations and time periods. "
-                    #     "Use this for ALL questions about weather data (e.g., 'What was the temperature in X?', 'Show me weather for multiple cities', 'Get weather data for date ranges'). "
-                    #     "Supports single location queries, date ranges (e.g., '20-25 December 2024'), and multiple locations. "
-                    #     "For date ranges or multiple locations, automatically uses batch processing for optimal performance. "
-                    #     "Returns a human-readable summary with sample data points. "
-                    #     "This is the PRIMARY entrypoint for weather queries and questions. "
-                    #     "Parameters: "
-                    #     "latitude - Latitude (-90 to 90). Use this for single location queries. "
-                    #     "longitude - Longitude (-180 to 180). Use this for single location queries. "
-                    #     "locations - List of locations with 'latitude' and 'longitude' keys. Use this for multiple location queries. "
-                    #     "parameter - Weather parameter to query (e.g., T2M, RH2M). "
-                    #     "start_date - Start date in YYYY-MM-DD format. "
-                    #     "end_date - End date in YYYY-MM-DD format. "
-                    #     "frequency - Data frequency: hourly, daily, or monthly."
-                    # ),
-                    parameters=NASAPowerQueryParams
-                ),
-                AgentEntrypoint(
-                    id="list_parameters",
-                    description="Returns a complete list of all available NASA POWER parameters with their full descriptions. Use this to show/list/display/get all weather and climate parameters (like T2M for temperature, RH2M for humidity, PRECTOTCORR for precipitation, etc.) from the NASA POWER dataset. Call this when users ask 'what parameters', 'list parameters', 'show parameters', 'available parameters', or similar questions about NASA POWER data fields.",
-                    parameters=None
-                ),
-                AgentEntrypoint(
                     id="enrich_locations",
-                    description=(
-                        "Enriches or adds NASA POWER data (e.g. temperature at 2m T2M/T2M_MAX/T2M_MIN, humidity RH2M, wind speed WS2M, surface pressure PS) to location records. "
-                        "The enriched data is written to the artifact only; each record gets nasaPowerProperties. "
-                        "Parameters: "
-                        "locations_artifact - Use this when referencing an EXISTING artifact (e.g., #xxxx from a previous agent response or file upload). This is the DEFAULT and PREFERRED method for production use. "
-                        # "locations_json - ONLY use this for TESTING or TEST PURPOSE when the user explicitly mentions testing, test purpose, or provides JSON directly in chat. Pass the JSON array string containing location records with eventDate, decimalLatitude, and decimalLongitude fields. "
-                        "weather_parameters - List of NASA POWER parameters to fetch (e.g., T2M, RH2M). "
-                        "date_range_days - Number of days to fetch (1 = exact event date only, >1 = range around event). (Default: 1)"
-                        "frequency - Data frequency: hourly, daily, or monthly. (Default: daily)"
-                    ),
+                    description=DESCRIPTION,
                     parameters=BatchEnrichParams
                 )
             ]
@@ -113,318 +68,19 @@ class NASAPowerAgent(IChatBioAgent):
 
     @override
     async def run(self, context: ResponseContext, request: str, entrypoint: str, params: Optional[BaseModel]):
-        if entrypoint == "query_weather":
-            await self._handle_query_weather(context, request, params)
-        elif entrypoint == "list_parameters":
+        if entrypoint == "enrich_locations":
             await self._handle_list_parameters(context, request)
-        elif entrypoint == "enrich_locations":
-            await self._handle_enrich_locations(context, request, params)
+            if params is not None:
+                await self._handle_enrich_locations(context, request, params)
         else:
             await context.reply(f"Unknown entrypoint: {entrypoint}")
 
-    async def _handle_query_weather(self, context: ResponseContext, request: str, params: Optional[NASAPowerQueryParams]):
-        """Handle weather data query requests"""
-        async with context.begin_process(summary="Fetching NASA POWER weather data") as process:
-            process: IChatBioAgentProcess
-            
-            # Set default parameters if not provided
-            if params is None:
-                end_date = datetime.now()
-                start_date = end_date - timedelta(days=30)
-                params = NASAPowerQueryParams(
-                    latitude=40.7128,
-                    longitude=-74.0060,
-                    parameter="T2M",
-                    start_date=start_date.strftime("%Y-%m-%d"),
-                    end_date=end_date.strftime("%Y-%m-%d"),
-                    frequency="daily"
-                )
-                await process.log(f"Using default parameters: New York City, last 30 days, T2M (temperature)")
-            
-            # Set default dates if not provided
-            if not params.start_date or not params.end_date:
-                end_date = datetime.now()
-                start_date = end_date - timedelta(days=30)
-                params.start_date = start_date.strftime("%Y-%m-%d")
-                params.end_date = end_date.strftime("%Y-%m-%d")
-            
-            # Parse dates
-            try:
-                start_dt = datetime.strptime(params.start_date, "%Y-%m-%d")
-                end_dt = datetime.strptime(params.end_date, "%Y-%m-%d")
-            except ValueError:
-                await context.reply("Error: Dates must be in YYYY-MM-DD format")
-                return
-            
-            # Determine if we have multiple locations
-            locations = []
-            if params.locations:
-                locations = params.locations
-            elif params.latitude is not None and params.longitude is not None:
-                locations = [{"latitude": params.latitude, "longitude": params.longitude}]
-            else:
-                await context.reply("Error: Must provide either latitude/longitude or locations list")
-                return
-            
-            # Determine if we need batch processing
-            # Use batch if: date range (multiple days) OR multiple locations
-            use_batch = False
-            if len(locations) > 1:
-                use_batch = True
-                await process.log(f"Multiple locations detected ({len(locations)}), using batch processing")
-            elif start_dt != end_dt and params.frequency == "daily":
-                # For date ranges with daily frequency, split into individual day queries
-                days_diff = (end_dt - start_dt).days + 1
-                if days_diff > 1:
-                    use_batch = True
-                    await process.log(f"Date range detected ({days_diff} days), using batch processing")
-            
-            try:
-                if use_batch:
-                    # Prepare batch queries
-                    queries = []
-                    
-                    if len(locations) > 1:
-                        # Multiple locations: create query for each location with date range
-                        for loc in locations:
-                            queries.append({
-                                'start_date': params.start_date,
-                                'end_date': params.end_date,
-                                'latitude': loc['latitude'],
-                                'longitude': loc['longitude'],
-                                'parameter': params.parameter,
-                                'frequency': params.frequency,
-                                'source': params.source,
-                                'temporal': params.temporal,
-                                'time': params.time
-                            })
-                    else:
-                        # Single location but date range: create query for each day
-                        current_date = start_dt
-                        while current_date <= end_dt:
-                            date_str = current_date.strftime("%Y-%m-%d")
-                            queries.append({
-                                'start_date': date_str,
-                                'end_date': date_str,
-                                'latitude': locations[0]['latitude'],
-                                'longitude': locations[0]['longitude'],
-                                'parameter': params.parameter,
-                                'frequency': params.frequency,
-                                'source': params.source,
-                                'temporal': params.temporal,
-                                'time': params.time
-                            })
-                            current_date += timedelta(days=1)
-                    
-                    await process.log(
-                        f"Processing {len(queries)} queries using batch multiprocessing:\n\n"
-                        f"  Locations: {len(locations)}\n"
-                        f"  Parameter: {params.parameter}\n"
-                        f"  Date Range: {params.start_date} to {params.end_date}\n"
-                        f"  Frequency: {params.frequency}"
-                    )
-                    
-                    # Execute batch queries
-                    results = self.data_fetcher.get_data_from_zarr_batch_multiprocessing(queries)
-                    
-                    # Process results
-                    successful_results = [r for r in results if 'error' not in r]
-                    failed_results = [r for r in results if 'error' in r]
-                    
-                    await process.log(
-                        f"Batch processing complete:\n"
-                        f"  Successful: {len(successful_results)}\n"
-                        f"  Failed: {len(failed_results)}"
-                    )
-                    
-                    # Combine results for single location date range
-                    if len(locations) == 1 and len(queries) > 1:
-                        # Merge all data points from different days
-                        all_data_points = []
-                        for result in successful_results:
-                            if 'data' in result:
-                                all_data_points.extend(result['data'])
-                        
-                        # Sort by date
-                        all_data_points.sort(key=lambda x: x['date'])
-                        
-                        # Create combined result
-                        if successful_results:
-                            # Get parameter description from API
-                            param_info = self.data_fetcher.get_parameter_info()
-                            param_description = param_info.get(params.parameter, successful_results[0].get('parameter_description', 'Unknown parameter'))
-                            
-                            combined_data = {
-                                'parameter': params.parameter,
-                                'parameter_description': param_description,
-                                'frequency': params.frequency,
-                                'latitude': successful_results[0]['latitude'],
-                                'longitude': successful_results[0]['longitude'],
-                                'data': all_data_points,
-                                'source': 'zarr_xarray_batch'
-                            }
-                            
-                            await process.create_artifact(
-                                mimetype="application/json",
-                                description=f"NASA POWER {params.parameter} data for ({locations[0]['latitude']}, {locations[0]['longitude']})",
-                                content=json.dumps(combined_data, indent=2).encode('utf-8'),
-                                metadata={
-                                    "source": "NASA POWER",
-                                    "parameter": params.parameter,
-                                    "location": f"{locations[0]['latitude']},{locations[0]['longitude']}",
-                                    "frequency": params.frequency,
-                                    "query_count": len(queries)
-                                }
-                            )
-                            
-                            num_data_points = len(all_data_points)
-                            summary = (
-                                f"**NASA POWER Data Summary (Batch Processing)**\n\n"
-                                f"**Location:** ({combined_data['latitude']}, {combined_data['longitude']})\n"
-                                f"**Parameter:** {combined_data['parameter']} - {combined_data['parameter_description']}\n"
-                                f"**Frequency:** {combined_data['frequency']}\n"
-                                f"**Data Points:** {num_data_points}\n"
-                                f"**Queries Processed:** {len(queries)}\n\n"
-                            )
-                            
-                            if num_data_points > 0:
-                                summary += "**Sample Data:**\n"
-                                sample_count = min(5, num_data_points)
-                                for item in all_data_points[:sample_count]:
-                                    value_str = f"{item['value']:.2f}" if item['value'] is not None else "null"
-                                    summary += f"  - {item['date']}: {value_str}\n"
-                                if num_data_points > sample_count * 2:
-                                    summary += "  ...\n"
-                                    for item in all_data_points[-sample_count:]:
-                                        value_str = f"{item['value']:.2f}" if item['value'] is not None else "null"
-                                        summary += f"  - {item['date']}: {value_str}\n"
-                            
-                            if failed_results:
-                                summary += f"\n{len(failed_results)} queries failed."
-                            
-                            await context.reply(summary)
-                        else:
-                            await context.reply(f"Error: All queries failed. First error: {failed_results[0]['error'] if failed_results else 'Unknown error'}")
-                    else:
-                        # Multiple locations: create summary for each
-                        all_results = []
-                        for i, result in enumerate(successful_results):
-                            if 'error' not in result:
-                                all_results.append(result)
-                        
-                        await process.create_artifact(
-                            mimetype="application/json",
-                            description=f"NASA POWER {params.parameter} data for {len(locations)} locations",
-                            content=json.dumps(all_results, indent=2).encode('utf-8'),
-                            metadata={
-                                "source": "NASA POWER",
-                                "parameter": params.parameter,
-                                "location_count": len(locations),
-                                "frequency": params.frequency,
-                                "query_count": len(queries)
-                            }
-                        )
-                        
-                        summary = (
-                            f"**NASA POWER Data Summary (Batch Processing)**\n\n"
-                            f"**Locations:** {len(locations)}\n"
-                            f"**Parameter:** {params.parameter}\n"
-                            f"**Date Range:** {params.start_date} to {params.end_date}\n"
-                            f"**Frequency:** {params.frequency}\n"
-                            f"**Successful Queries:** {len(successful_results)}\n"
-                            f"**Failed Queries:** {len(failed_results)}\n\n"
-                        )
-                        
-                        # Show sample results for first few locations
-                        if successful_results:
-                            summary += "**Sample Results:**\n"
-                            for i, result in enumerate(successful_results[:3]):
-                                loc = locations[i] if i < len(locations) else {}
-                                summary += f"\n**Location {i+1}:** ({result.get('latitude', loc.get('latitude', 'N/A'))}, {result.get('longitude', loc.get('longitude', 'N/A'))})\n"
-                                if 'data' in result and len(result['data']) > 0:
-                                    sample_data = result['data'][0]
-                                    value_str = f"{sample_data['value']:.2f}" if sample_data['value'] is not None else "null"
-                                    summary += f"  - {sample_data['date']}: {value_str}\n"
-                                summary += f"  - Total data points: {len(result.get('data', []))}\n"
-                            
-                            if len(successful_results) > 3:
-                                summary += f"\n... and {len(successful_results) - 3} more locations\n"
-                        
-                        summary += "\nFull results available in the JSON artifact."
-                        
-                        await context.reply(summary)
-                else:
-                    # Single query (single location, single date or already handled date range)
-                    await process.log(
-                        f"Querying NASA POWER data:\n\n"
-                        f"  Location: ({locations[0]['latitude']}, {locations[0]['longitude']})\n\n"
-                        f"  Parameter: {params.parameter}\n\n"
-                        f"  Date Range: {params.start_date} to {params.end_date}\n\n"
-                        f"  Frequency: {params.frequency}"
-                    )
-                    
-                    data = self.data_fetcher.get_data_from_zarr_with_xarray(
-                        start_date=params.start_date,
-                        end_date=params.end_date,
-                        latitude=locations[0]['latitude'],
-                        longitude=locations[0]['longitude'],
-                        parameter=params.parameter,
-                        frequency=params.frequency,
-                        source=params.source,
-                        temporal=params.temporal,
-                        time=params.time
-                    )
-                    
-                    num_data_points = len(data['data'])
-                    await process.log(f"Successfully retrieved {num_data_points} data points")
-                    
-                    await process.create_artifact(
-                        mimetype="application/json",
-                        description=f"NASA POWER {params.parameter} data for ({locations[0]['latitude']}, {locations[0]['longitude']})",
-                        content=json.dumps(data, indent=2).encode('utf-8'),
-                        metadata={
-                            "source": "NASA POWER",
-                            "parameter": params.parameter,
-                            "location": f"{locations[0]['latitude']},{locations[0]['longitude']}",
-                            "frequency": params.frequency
-                        }
-                    )
-                    
-                    summary = (
-                        f"**NASA POWER Data Summary**\n\n"
-                        f"**Location:** ({data['latitude']}, {data['longitude']})\n"
-                        f"**Parameter:** {data['parameter']} - {data['parameter_description']}\n"
-                        f"**Frequency:** {data['frequency']}\n"
-                        f"**Data Points:** {num_data_points}\n\n"
-                    )
-                    
-                    # Show first few and last few data points
-                    if num_data_points > 0:
-                        summary += "**Sample Data:**\n"
-                        sample_count = min(5, num_data_points)
-                        for item in data['data'][:sample_count]:
-                            value_str = f"{item['value']:.2f}" if item['value'] is not None else "null"
-                            summary += f"  - {item['date']}: {value_str}\n"
-                        if num_data_points > sample_count * 2:
-                            summary += "  ...\n"
-                            for item in data['data'][-sample_count:]:
-                                value_str = f"{item['value']:.2f}" if item['value'] is not None else "null"
-                                summary += f"  - {item['date']}: {value_str}\n"
-                    
-                    await context.reply(summary)
-                
-            except ValueError as e:
-                await process.log(f"Validation error: {str(e)}")
-                await context.reply(f"Error: {str(e)}")
-            except KeyError as e:
-                await process.log(f"Parameter not found: {str(e)}")
-                await context.reply(f"Error: {str(e)}")
-            except Exception as e:
-                await process.log(f"Unexpected error: {str(e)}")
-                await context.reply(f"An error occurred while fetching data: {str(e)}")
-
     async def _handle_list_parameters(self, context: ResponseContext, request: str):
         """Handle requests to list available parameters"""
+        if self._cached_parameters is not None:
+            await context.reply(self._cached_parameters)
+            return
+        
         async with context.begin_process(summary="Listing available NASA POWER parameters") as process:
             process: IChatBioAgentProcess
             
@@ -436,12 +92,17 @@ class NASAPowerAgent(IChatBioAgent):
             if not param_metadata:
                 # Fallback to simple parameter info if API fails
                 param_info = self.data_fetcher.get_parameter_info()
+                param_ids = sorted(param_info.keys())
+                param_ids_str = ','.join(param_ids)
+                await process.log(f"Retrieved {len(param_ids)} parameters: {param_ids_str}")
+                
                 response = "**Available NASA POWER Parameters:**\n\n"
                 for param, description in sorted(param_info.items()):
                     response += f"**{param}**\n  {description}\n\n"
             else:
                 # Format parameters: extract only name, keywords, and sources
                 formatted_params = {}
+                param_ids = []
                 for param in param_metadata:
                     param_id = param.get('id')
                     sources = param.get('sources', [])
@@ -451,12 +112,10 @@ class NASAPowerAgent(IChatBioAgent):
                             "name": param.get('name', 'Unknown parameter'),
                             "keywords": param.get('keywords', [])
                         }
+                        param_ids.append(param_id)
                 
-                # Process log the formatted parameters
-                await process.log(
-                    f"Formatted {len(formatted_params)} parameters",
-                    data={"formatted_parameters": formatted_params}
-                )
+                param_ids_str = ','.join(sorted(param_ids))
+                await process.log(f"Formatted {len(formatted_params)} parameters: {param_ids_str}")
                 
                 # Format the response for user
                 response = "**Available NASA POWER Parameters:**\n\n"
@@ -472,7 +131,9 @@ class NASAPowerAgent(IChatBioAgent):
                         response += f"  Sources: {', '.join(sources)}\n"
                     response += "\n"
             
-            response += "\nYou can query any of these parameters using the `query_weather` entrypoint."
+            response += "\nYou can use any of these parameters when enriching location records with the `enrich_locations` entrypoint."
+            
+            self._cached_parameters = response
             
             await context.reply(response)
     
@@ -487,19 +148,6 @@ class NASAPowerAgent(IChatBioAgent):
             
             locations = None
             
-            # Only use locations_json for testing purposes
-            # if params.locations_json is not None:
-            #     await process.log("Using locations from provided JSON string")
-                
-            #     # Parse the JSON content to get locations array
-            #     try:
-            #         locations = await parse_locations_json(params.locations_json, process)
-            #     except json.JSONDecodeError as e:
-            #         await context.reply(f"Error: Invalid JSON in location data: {str(e)}. Please ensure the JSON is a valid array of location records.")
-            #         return
-            #     except ValueError as e:
-            #         await context.reply(f"Error: {str(e)}")
-            #         return
             if params.locations_artifact is not None:
                 try:
                     locations = await retrieve_artifact_content(params.locations_artifact, process)
