@@ -81,7 +81,7 @@ class NASAPowerAgent(IChatBioAgent):
             await context.reply(self._cached_parameters)
             return
         
-        async with context.begin_process(summary="Listing available NASA POWER parameters") as process:
+        async with context.begin_process(summary="Enriching records with NASA POWER data (listing available parameters & enriching location records)") as process:
             process: IChatBioAgentProcess
             
             await process.log("Retrieving available parameters from NASA POWER API metadata endpoint")
@@ -100,25 +100,53 @@ class NASAPowerAgent(IChatBioAgent):
                 for param, description in sorted(param_info.items()):
                     response += f"**{param}**\n  {description}\n\n"
             else:
-                # Format parameters: extract only name, keywords, and sources
+                # Format parameters: extract name, keywords, and sources (all parameters, regardless of source)
                 formatted_params = {}
                 param_ids = []
+                all_sources = set()
                 for param in param_metadata:
                     param_id = param.get('id')
                     sources = param.get('sources', [])
                     
-                    if param_id and 'merra2' in sources:
+                    if param_id:
                         formatted_params[param_id] = {
                             "name": param.get('name', 'Unknown parameter'),
-                            "keywords": param.get('keywords', [])
+                            "keywords": param.get('keywords', []),
+                            "sources": sources
                         }
                         param_ids.append(param_id)
+                        all_sources.update(sources)
                 
-                param_ids_str = ','.join(sorted(param_ids))
-                await process.log(f"Formatted {len(formatted_params)} parameters: {param_ids_str}")
+                # param_ids_str = ','.join(sorted(param_ids))
+                sources_str = ', '.join(sorted(all_sources))
+                # await process.log(f"Formatted {len(formatted_params)} parameters from all sources: {param_ids_str}")
+                await process.log(f"Available sources: {sources_str}")
+                
+                # Categorize parameters by source
+                params_by_source = {}
+                for param_id, param_data in formatted_params.items():
+                    sources = param_data.get('sources', [])
+                    for source in sources:
+                        if source not in params_by_source:
+                            params_by_source[source] = []
+                        params_by_source[source].append(param_id)
+                
+                # Log parameters grouped by source
+                for source in sorted(params_by_source.keys()):
+                    source_params = sorted(params_by_source[source])
+                    params_list = ', '.join(source_params)
+                    await process.log(f"{source} parameters ({len(source_params)}): {params_list}")
                 
                 # Format the response for user
                 response = "**Available NASA POWER Parameters:**\n\n"
+                response += f"**Available Sources:** {', '.join(sorted(all_sources))}\n\n"
+                
+                # Add parameters grouped by source to response
+                response += "**Parameters by Source:**\n\n"
+                for source in sorted(params_by_source.keys()):
+                    source_params = sorted(params_by_source[source])
+                    params_list = ', '.join(source_params)
+                    response += f"**{source}** ({len(source_params)} parameters): {params_list}\n\n"
                 for param_id, param_data in sorted(formatted_params.items()):
                     param_name = param_data.get('name', 'Unknown parameter')
                     keywords = param_data.get('keywords', [])
@@ -139,7 +167,7 @@ class NASAPowerAgent(IChatBioAgent):
     
     async def _handle_enrich_locations(self, context: ResponseContext, request: str, params: Optional[BatchEnrichParams]):
         """Handle batch enrichment of location records with NASA POWER data"""
-        async with context.begin_process(summary="Enriching location records with NASA POWER data") as process:
+        async with context.begin_process(summary="Enriching records with NASA POWER data") as process:
             process: IChatBioAgentProcess
             
             if params is None:
@@ -312,6 +340,18 @@ class NASAPowerAgent(IChatBioAgent):
                 successful = sum(1 for loc in enriched_locations if has_valid_nasa_power_data(loc))
                 skipped = len(enriched_locations) - successful
                 valid_enriched_locations = [loc for loc in enriched_locations if has_valid_nasa_power_data(loc)]
+                
+                # Check for errors in enriched locations
+                errors_found = []
+                for i, loc in enumerate(enriched_locations):
+                    nasa_props = loc.get('nasaPowerProperties')
+                    if nasa_props and isinstance(nasa_props, list):
+                        for prop in nasa_props:
+                            if isinstance(prop, dict) and 'error' in prop:
+                                error_msg = prop.get('error', 'Unknown error')
+                                param = prop.get('parameter', 'Unknown parameter')
+                                errors_found.append(f"Location {i+1} ({param}): {error_msg}")
+                
                 artifact_locations = []
                 for loc in enriched_locations:
                     rec = dict(loc)
@@ -319,14 +359,21 @@ class NASAPowerAgent(IChatBioAgent):
                         rec["nasaPowerProperties"] = None
                     artifact_locations.append(rec)
 
-                await process.log(
-                    f"Successfully enriched {successful} records\n"
-                    f"Skipped {skipped} records (missing data)"
-                )
+                log_msg = f"Successfully enriched {successful} records\nSkipped {skipped} records (missing data)"
+                if errors_found:
+                    # Log first few errors as examples
+                    error_samples = errors_found[:5]
+                    log_msg += f"\n\nErrors encountered ({len(errors_found)} total):"
+                    for err in error_samples:
+                        log_msg += f"\n  - {err}"
+                    if len(errors_found) > 5:
+                        log_msg += f"\n  ... and {len(errors_found) - 5} more errors"
+                
+                await process.log(log_msg)
                 await process.log(
                     f"Enriched {successful} location records with NASA POWER data (out of {len(enriched_locations)} total)",
                     data={
-                        "source": "NASA POWER",
+                        "source": [params.source] if params.source else [],
                         "parameters": weather_parameters,
                         "frequency": frequency,
                         "total_records": len(enriched_locations),
@@ -397,9 +444,23 @@ class NASAPowerAgent(IChatBioAgent):
                     f"**Successfully Enriched:** {successful}\n"
                     f"**Skipped (missing data):** {skipped}\n"
                     f"**Parameters:** {', '.join(weather_parameters)}\n"
+                    f"**Source:** {params.source}\n"
                     f"**Date Range:** {date_info}\n"
-                    f"**Frequency:** {frequency}\n\n"
+                    f"**Frequency:** {frequency}\n"
                 )
+                
+                if errors_found:
+                    summary += f"\n**Errors Encountered:** {len(errors_found)} error(s) occurred during data fetching.\n"
+                    summary += "Common causes: parameter not available in specified source, invalid Zarr URL, or data unavailable for the date range.\n"
+                    if len(errors_found) <= 3:
+                        summary += "\n**Error Details:**\n"
+                        for err in errors_found:
+                            summary += f"  - {err}\n"
+                    else:
+                        summary += f"\n**Sample Errors (showing first 3 of {len(errors_found)}):**\n"
+                        for err in errors_found[:3]:
+                            summary += f"  - {err}\n"
+                    summary += "\n"
 
                 # Show sample enriched records (only those with valid non-null data)
                 valid_records = valid_enriched_locations
