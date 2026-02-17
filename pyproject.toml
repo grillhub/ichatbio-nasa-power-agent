@@ -14,7 +14,9 @@ dependencies = [
     "uvicorn~=0.34.3",
     "zarr~=2.18.0",
     "s3fs~=2024.6.1",
-    "numpy~=1.26.0"
+    "numpy~=1.26.0",
+    "xarray~=2024.9.0",
+    "genson~=1.2.2",
 ]
 
 [tool.pytest.ini_options]
