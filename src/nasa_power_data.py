@@ -677,7 +677,7 @@ class NASAPowerDataFetcher:
             longitude: Longitude coordinate (-180 to 180)
             parameter: Parameter name (e.g., T2M, RH2M, PRECTOTCORR)
             frequency: Data frequency - 'hourly', 'daily', or 'monthly'
-            source: Data source (default: 'merra2', options: 'merra2', 'geosit', etc.)
+            source: Data source (default: 'merra2', options: 'merra2', etc.)
             temporal: Temporal type (default: 'temporal')
             time: Time standard (default: 'utc')
         
@@ -1193,7 +1193,7 @@ def enrich_locations_with_nasa_data(
         date_range_days: Number of days to fetch (default: 1 = exact event date only)
                         Use values > 1 to fetch a range around the event date
         frequency: Data frequency - 'hourly', 'daily', or 'monthly' (default: 'daily')
-        source: Data source (default: 'merra2', options: 'merra2', 'geosit', etc.)
+        source: Data source (default: 'merra2', options: 'merra2', etc.)
         temporal: Temporal type (default: 'temporal')
         time: Time standard (default: 'utc')
     
