@@ -1237,10 +1237,13 @@ def enrich_locations_with_nasa_data(
                 date_str = raw.split(' ')[0].strip()
             else:
                 date_str = raw
-            # Year-only (e.g. "1940", "1939"): use January 1st so we can query NASA data
+            
+            # Year-only (e.g. "1940", "1939"): skip because we don't know which season/date
             if len(date_str) == 4 and date_str.isdigit():
-                date_str = f"{date_str}-01-01"
-            elif len(date_str) >= 10:
+                location_validity.append(False)
+                continue
+            
+            if len(date_str) >= 10:
                 date_str = date_str[:10]
             center_date = datetime.strptime(date_str, "%Y-%m-%d")
         except (ValueError, AttributeError):
