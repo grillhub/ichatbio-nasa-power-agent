@@ -214,15 +214,36 @@ class NASAPowerAgent(IChatBioAgent):
             # If address is available (from params or extracted), geocode it to get lat/lon
             if address_to_use:
                 await process.log(f"Geocoding address: {address_to_use}")
-                geocoded = geocode_address(address_to_use)
-                if geocoded:
-                    latitude, longitude = geocoded
-                    await process.log(f"Geocoded to coordinates: ({latitude}, {longitude})")
+                geocoded_results = geocode_address(address_to_use)
+                if geocoded_results:
+                    # Display all results to user so they can see all options
+                    if len(geocoded_results) > 1:
+                        results_message = f"Found {len(geocoded_results)} matching locations for '{address_to_use}':\n\n"
+                        for idx, result in enumerate(geocoded_results, 1):
+                            display_name = result.get('display_name', 'Unknown location')
+                            lat = result.get('latitude')
+                            lon = result.get('longitude')
+                            results_message += f"{idx}. {display_name}\n   Coordinates: ({lat}, {lon})\n\n"
+                        results_message += f"Using the first result by default. If you need a different location, please specify more details."
+                        await context.reply(results_message)
+                    
+                    # Use the first result as default
+                    first_result = geocoded_results[0]
+                    latitude = first_result.get('latitude')
+                    longitude = first_result.get('longitude')
+                    display_name = first_result.get('display_name', address_to_use)
+                    await process.log(f"Selected location: {display_name}")
+                    await process.log(f"Using coordinates: ({latitude}, {longitude})")
                 else:
-                    await process.log(f"Warning: Failed to geocode address '{address_to_use}', falling back to default location")
+                    await process.log(f"Failed to geocode address '{address_to_use}'")
+                    await context.reply(
+                        f"**Location not found.** Could not find coordinates for \"{address_to_use}\". "
+                        "Please provide a valid address or specify coordinates (e.g. latitude, longitude)."
+                    )
+                    return
             
-            # Try to extract coordinates from request (only if address wasn't provided or failed)
-            if not address_to_use or latitude == default_lat:
+            # Try to extract coordinates from request (only if address wasn't provided)
+            if not address_to_use:
                 # Look for lat/lon patterns like "40.7128, -74.0060" or "lat: 40.7128, lon: -74.0060"
                 coord_pattern = r'(-?\d+\.?\d*)\s*[,:]\s*(-?\d+\.?\d*)'
                 coord_match = re.search(coord_pattern, request)
