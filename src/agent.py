@@ -1,6 +1,7 @@
 from typing import override, Optional, List
 import json
 import re
+import statistics
 from datetime import datetime, timedelta
 
 from ichatbio.agent import IChatBioAgent
@@ -256,6 +257,7 @@ class NASAPowerAgent(IChatBioAgent):
             
             # Try to extract date from request - handle multiple formats
             date_extracted = False
+            request_is_month_only = False  # True when user gave only month (e.g. March 2020) -> we'll report average & std
             
             # Format 1: YYYY-MM-DD
             date_pattern = r'(\d{4}-\d{2}-\d{2})'
@@ -312,9 +314,44 @@ class NASAPowerAgent(IChatBioAgent):
                         except ValueError as e:
                             await process.log(f"Failed to parse extracted date: {str(e)}")
                     else:
-                        await process.log(f"Could not find date pattern in request: '{request}'")
+                        # Format 4: Month YYYY (e.g., "March 2020", "in March 2020") - full month range
+                        date_pattern4 = r'(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\s+(\d{4})'
+                        date_match4 = re.search(date_pattern4, request, re.IGNORECASE)
+                        if date_match4:
+                            try:
+                                month_name = date_match4.group(1).lower()
+                                year = int(date_match4.group(2))
+                                month_map = {
+                                    'jan': 1, 'feb': 2, 'mar': 3, 'apr': 4, 'may': 5, 'jun': 6,
+                                    'jul': 7, 'aug': 8, 'sep': 9, 'oct': 10, 'nov': 11, 'dec': 12
+                                }
+                                month = month_map.get(month_name[:3], 1)
+                                start_date = datetime(year, month, 1).strftime("%Y-%m-%d")
+                                # Last day of month
+                                if month == 12:
+                                    end_date = datetime(year, 12, 31).strftime("%Y-%m-%d")
+                                else:
+                                    last_day = (datetime(year, month + 1, 1) - timedelta(days=1)).day
+                                    end_date = datetime(year, month, last_day).strftime("%Y-%m-%d")
+                                date_extracted = True
+                                request_is_month_only = True
+                                await process.log(f"Extracted date (Month YYYY format): {start_date} to {end_date} (from '{date_match4.group(0)}')")
+                            except ValueError as e:
+                                await process.log(f"Failed to parse extracted date: {str(e)}")
+                        else:
+                            await process.log(f"Could not find date pattern in request: '{request}'")
             
             if not date_extracted:
+                # Year-only request? (e.g. "in 2020", "2020") -> ask user to specify at least month
+                year_only_pattern = r'\b(19|20)\d{2}\b'
+                month_name_pattern = r'(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*'
+                if re.search(year_only_pattern, request) and not re.search(month_name_pattern, request, re.IGNORECASE):
+                    await process.log("Request specifies a year but no month; asking user to specify at least the month.")
+                    await context.reply(
+                        "Please specify at least the **month** (e.g. March 2020). "
+                        "Different months represent different seasons, so we cannot compute a meaningful average for a whole year."
+                    )
+                    return
                 await process.log(f"No date found in request, using default date: {default_date}")
             
             # Use first parameter from weather_parameters list
@@ -353,6 +390,18 @@ class NASAPowerAgent(IChatBioAgent):
                     f"**Frequency:** {data['frequency']}\n"
                     f"**Data Points:** {num_data_points}\n\n"
                 )
+                
+                # For month-only requests: add average and standard deviation over the month
+                if request_is_month_only and num_data_points > 0:
+                    values = [item['value'] for item in data['data'] if item.get('value') is not None]
+                    if values:
+                        month_mean = statistics.mean(values)
+                        month_std = statistics.stdev(values) if len(values) > 1 else 0.0
+                        summary += (
+                            f"**Monthly summary** (average over {len(values)} days):\n"
+                            f"  - **Average:** {month_mean:.2f}\n"
+                            f"  - **Standard deviation:** {month_std:.2f}\n\n"
+                        )
                 
                 # Show sample data points
                 if num_data_points > 0:
