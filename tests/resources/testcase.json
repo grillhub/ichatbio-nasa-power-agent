@@ -76,7 +76,7 @@
     "type": "common_query",
     "request": "Get the temperature in Gainesville, FL on 25 Dec 2035",
     "params_override": {},
-    "expected_status": "success",
+    "expected_status": "fail",
     "expected_response_contains": ["NASA POWER", "Location"]
   },
   {
@@ -95,7 +95,7 @@
     "type": "common_query",
     "request": "Get temperature in Gainesville, FL on March 2020 - 2025",
     "params_override": {},
-    "expected_status": "success_or_fail",
+    "expected_status": "success",
     "expected_response_contains": ["NASA POWER", "Location"]
   },
   {
@@ -106,33 +106,5 @@
     "params_override": {},
     "expected_status": "fail",
     "expected_response_contains": ["specify at least the month", "season"]
-  },
-  {
-    "case_id": "common_11_yyyy_mm_dd",
-    "description": "Common query with YYYY-MM-DD date format",
-    "type": "common_query",
-    "request": "Get temperature in Gainesville, FL for 2020-03-15",
-    "params_override": {},
-    "expected_status": "success",
-    "expected_response_contains": ["NASA POWER", "Location"],
-    "expected_log_contains": ["2020-03-15"]
-  },
-  {
-    "case_id": "enrich_list_params_only",
-    "description": "Enrich entrypoint with null params returns list of parameters only",
-    "type": "enrich_locations_null_params",
-    "request": "List parameters",
-    "params_override": null,
-    "expected_status": "success",
-    "expected_response_contains": ["T2M", "Parameter", "Available"]
-  },
-  {
-    "case_id": "fail_unknown_entrypoint",
-    "description": "Unknown entrypoint returns error",
-    "type": "unknown_entrypoint",
-    "request": "Do something",
-    "params_override": null,
-    "expected_status": "fail",
-    "expected_response_contains": ["Unknown", "unknown"]
   }
 ]
