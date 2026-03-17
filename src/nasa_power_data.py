@@ -1180,13 +1180,17 @@ def enrich_locations_with_nasa_data(
     """
     Enrich a list of location records with NASA POWER data.
     
-    This function takes an array of records from iChatBio with eventDate, 
-    decimalLatitude, and decimalLongitude, and enriches each record with
-    NASA POWER weather data.
+    This function takes an array of records from iChatBio with:
+      - either a single event date (`eventDate`)
+      - or an explicit date range (`startDate` and `end_date`)
+    plus `decimalLatitude` and `decimalLongitude`, and enriches each record
+    with NASA POWER weather data.
     
     Args:
         locations: List of location records with keys:
             - eventDate: Date/datetime string (ISO format) or None
+            - startDate: Optional, explicit range start (YYYY-MM-DD)
+            - end_date: Optional, explicit range end (YYYY-MM-DD)
             - decimalLatitude: Latitude coordinate or None
             - decimalLongitude: Longitude coordinate or None
         parameters: List of NASA POWER parameters to fetch (default: ['T2M'])
@@ -1218,34 +1222,63 @@ def enrich_locations_with_nasa_data(
     for loc_idx, location in enumerate(locations):
         # Skip if essential data is missing
         event_date = location.get('eventDate')
+        start_date_raw = location.get('startDate')
+        end_date_raw = location.get('end_date')
         latitude = location.get('decimalLatitude')
         longitude = location.get('decimalLongitude')
         
-        if event_date is None or latitude is None or longitude is None:
+        if latitude is None or longitude is None:
             location_validity.append(False)
             continue
-        
+
+        # Determine date range for this location:
+        #  - If startDate/end_date are provided, use them directly.
+        #  - Otherwise, derive a window from eventDate and date_range_days.
+        use_explicit_range = bool(start_date_raw and end_date_raw)
         try:
-            raw = str(event_date).strip()
-            # Take first segment if range (e.g. "2007-06-19/2007-06-20" → "2007-06-19")
-            if '/' in raw:
-                raw = raw.split('/')[0].strip()
-            # Strip datetime: take date part only (before "T" or space)
-            if 'T' in raw:
-                date_str = raw.split('T')[0].strip()
-            elif ' ' in raw:
-                date_str = raw.split(' ')[0].strip()
+            if use_explicit_range:
+                # Explicit start/end range
+                start_str = str(start_date_raw).strip()[:10]
+                end_str = str(end_date_raw).strip()[:10]
+                start_date = datetime.strptime(start_str, "%Y-%m-%d")
+                end_date = datetime.strptime(end_str, "%Y-%m-%d")
+                center_date = start_date  # keep a stable value for normalization
             else:
-                date_str = raw
-            
-            # Year-only (e.g. "1940", "1939"): skip because we don't know which season/date
-            if len(date_str) == 4 and date_str.isdigit():
-                location_validity.append(False)
-                continue
-            
-            if len(date_str) >= 10:
-                date_str = date_str[:10]
-            center_date = datetime.strptime(date_str, "%Y-%m-%d")
+                if event_date is None:
+                    location_validity.append(False)
+                    continue
+
+                raw = str(event_date).strip()
+                # Take first segment if range (e.g. "2007-06-19/2007-06-20" → "2007-06-19")
+                if '/' in raw:
+                    raw = raw.split('/')[0].strip()
+                # Strip datetime: take date part only (before "T" or space)
+                if 'T' in raw:
+                    date_str = raw.split('T')[0].strip()
+                elif ' ' in raw:
+                    date_str = raw.split(' ')[0].strip()
+                else:
+                    date_str = raw
+                
+                # Year-only (e.g. "1940", "1939"): skip because we don't know which season/date
+                if len(date_str) == 4 and date_str.isdigit():
+                    location_validity.append(False)
+                    continue
+                
+                if len(date_str) >= 10:
+                    date_str = date_str[:10]
+                center_date = datetime.strptime(date_str, "%Y-%m-%d")
+
+                # Calculate date range from center_date and date_range_days
+                if date_range_days == 1:
+                    # Fetch only the exact event date
+                    start_date = center_date
+                    end_date = center_date
+                else:
+                    # Fetch a range around the event date
+                    half_range = date_range_days // 2
+                    start_date = center_date - timedelta(days=half_range)
+                    end_date = center_date + timedelta(days=half_range)
         except (ValueError, AttributeError):
             # Invalid date format
             location_validity.append(False)
@@ -1254,17 +1287,6 @@ def enrich_locations_with_nasa_data(
         # Location is valid
         location_validity.append(True)
         location_center_dates[loc_idx] = center_date
-        
-        # Calculate date range
-        if date_range_days == 1:
-            # Fetch only the exact event date
-            start_date = center_date
-            end_date = center_date
-        else:
-            # Fetch a range around the event date
-            half_range = date_range_days // 2
-            start_date = center_date - timedelta(days=half_range)
-            end_date = center_date + timedelta(days=half_range)
         
         # Create queries for each parameter
         for param_idx, parameter in enumerate(parameters):
