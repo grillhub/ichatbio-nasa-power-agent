@@ -33,6 +33,7 @@ DESCRIPTION = """\
 This agent can do the following:
  - List available NASA POWER parameters: Returns a complete list of all available NASA POWER parameters with their full descriptions. Use this to show/list/display/get all weather and climate parameters (like T2M for temperature, RH2M for humidity, PRECTOTCORR for precipitation, etc.) from the NASA POWER dataset.
  - Enrich locations: Enriches or adds NASA POWER data (e.g. temperature at 2m T2M) to location records. The enriched data is written to the artifact only; each record gets nasaPowerProperties.
+ - Query common question: Converts a natural language query or address string into a JSON list of locations (including latitude, longitude, and date range), then enriches those locations with NASA POWER data in the next step. This flow is handled via `enrich_locations`, which internally calls the common query handler before `await self._handle_enrich_locations(context, request, params)`.
 
 To use this agent, provide an artifact local_id with location records containing latitude, longitude, and date information. The agent will extract location data from the artifact and enrich it with NASA POWER weather and climate data.
 """
@@ -564,6 +565,8 @@ class NASAPowerAgent(IChatBioAgent):
             weather_parameters = params.weather_parameters
             date_range_days = params.date_range_days
             frequency = params.frequency
+            if frequency == 'monthly':
+                frequency = 'daily'
 
             await process.log(
                 f"Data source: {params.source} (merra2 is the default data source.)"
