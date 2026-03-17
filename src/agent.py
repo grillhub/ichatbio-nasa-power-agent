@@ -44,10 +44,11 @@ class BatchEnrichParams(BaseModel):
     locations_artifact: Optional[Artifact] = Field(default=None)
     address: Optional[str] = Field(default=None)
     weather_parameters: List[str] = Field(default=['T2M'])
-    request_has_day: bool = Field(default=True)
+    day: Optional[List[str]] = Field(default=None)
+    month: Optional[List[str]] = Field(default=None)
+    year: Optional[List[str]] = Field(default=None)
     start_date: Optional[str] = Field(default=None)
     end_date: Optional[str] = Field(default=None)
-    date_range_days: int = Field(default=1)
     frequency: str = Field(default="daily")
     source: str = Field(default="merra2")
     temporal: str = Field(default="temporal")
@@ -251,14 +252,71 @@ class NASAPowerAgent(IChatBioAgent):
                     except ValueError:
                         pass
             
-            # Date handling: prefer explicit params, but if the caller indicates the request
-            # does NOT have a specific date (request_has_day = False), interpret the
-            # provided start/end as a repeated-month range across years (e.g. March 2020-2025).
+            # Date handling: prefer explicit param arrays for day/month/year; fall back to
+            # start_date/end_date when no month is provided; otherwise parse from request text.
             date_extracted = False
             request_is_month_only = False  # True when user gave only month (e.g. March 2020)
             month_year_ranges: list[tuple[str, str]] = []  # Optional list of (start_date, end_date) pairs
 
-            if params.start_date is not None or params.end_date is not None:
+            # 1) Use explicit day/month/year arrays if provided (month and year required)
+            if params.year and params.month:
+                try:
+                    years = sorted({int(y) for y in params.year})
+                    months = sorted({int(m) for m in params.month})
+                except ValueError:
+                    await process.log("Invalid year/month values in params; expected integers as strings.")
+                    await context.reply("Error: `year` and `month` parameters must be integer strings, e.g. year=['2020'], month=['3'].")
+                    return None
+
+                # Determine day range: either explicit list, or full month if day is None
+                explicit_days = None
+                if params.day:
+                    try:
+                        day_ints = sorted({int(d) for d in params.day})
+                        if not day_ints:
+                            explicit_days = None
+                        else:
+                            explicit_days = (day_ints[0], day_ints[-1])
+                    except ValueError:
+                        await process.log("Invalid day values in params; expected integers as strings.")
+                        await context.reply("Error: `day` parameters must be integer strings, e.g. day=['1','2','3'].")
+                        return None
+
+                for year in years:
+                    for month in months:
+                        try:
+                            if explicit_days is not None:
+                                start_day, end_day = explicit_days
+                            else:
+                                start_day = 1
+                                if month == 12:
+                                    end_day = 31
+                                else:
+                                    end_day = (datetime(year, month + 1, 1) - timedelta(days=1)).day
+
+                            start_dt = datetime(year, month, start_day)
+                            end_dt = datetime(year, month, end_day)
+                        except ValueError as e:
+                            await process.log(f"Invalid date constructed from params: {e}")
+                            await context.reply(f"Error: Invalid date in day/month/year parameters: {e}")
+                            return None
+
+                        month_year_ranges.append(
+                            (start_dt.strftime("%Y-%m-%d"), end_dt.strftime("%Y-%m-%d"))
+                        )
+
+                if month_year_ranges:
+                    start_date = month_year_ranges[0][0]
+                    end_date = month_year_ranges[-1][1]
+                    date_extracted = True
+                    request_is_month_only = explicit_days is None
+                    await process.log(
+                        f"Using explicit day/month/year parameters; created {len(month_year_ranges)} date ranges "
+                        f"from {start_date} to {end_date}."
+                    )
+
+            # 2) If no explicit month, but start_date/end_date are given: trust those
+            if not date_extracted and (params.start_date is not None or params.end_date is not None) and not params.month:
                 start_date = params.start_date or default_date
                 end_date = params.end_date or start_date
 
@@ -271,49 +329,13 @@ class NASAPowerAgent(IChatBioAgent):
                     await context.reply(str(e))
                     return None
 
-                if not params.request_has_day:
-                    # Interpret as "this month across multiple years", e.g. March 2020-2025:
-                    # build a (first_day_of_month, last_day_of_month) pair for each year.
-                    start_dt = datetime.strptime(start_date, "%Y-%m-%d")
-                    end_dt = datetime.strptime(end_date, "%Y-%m-%d")
-                    month = start_dt.month
-                    start_year = start_dt.year
-                    end_year = end_dt.year
-                    if end_year < start_year:
-                        start_year, end_year = end_year, start_year
+                date_extracted = True
+                await process.log(
+                    f"Using date range from params: start_date={start_date}, end_date={end_date}"
+                )
 
-                    month_year_ranges = []
-                    for year in range(start_year, end_year + 1):
-                        first = datetime(year, month, 1)
-                        if month == 12:
-                            last = datetime(year, 12, 31)
-                        else:
-                            last_day = (datetime(year, month + 1, 1) - timedelta(days=1)).day
-                            last = datetime(year, month, last_day)
-                        month_year_ranges.append(
-                            (first.strftime("%Y-%m-%d"), last.strftime("%Y-%m-%d"))
-                        )
-
-                    # For metadata/logging, keep the overall first and last bounds
-                    if month_year_ranges:
-                        start_date = month_year_ranges[0][0]
-                        end_date = month_year_ranges[-1][1]
-                        request_is_month_only = True
-
-                    date_extracted = True
-                    await process.log(
-                        "Interpreting date range as repeated month across years "
-                        f"based on params (request_has_day = False). "
-                        f"Using {len(month_year_ranges)} month ranges from {start_date} to {end_date}."
-                    )
-                else:
-                    # Standard behavior: trust the explicit continuous range
-                    date_extracted = True
-                    await process.log(
-                        f"Using date range from params: start_date={start_date}, end_date={end_date}"
-                    )
-            else:
-                # No explicit dates were provided in params, try to extract date from request
+            # 3) Otherwise, fall back to parsing dates from the natural language request
+            if not date_extracted:
                 (
                     date_extracted,
                     request_is_month_only,
@@ -563,7 +585,6 @@ class NASAPowerAgent(IChatBioAgent):
                 return
             
             weather_parameters = params.weather_parameters
-            date_range_days = params.date_range_days
             frequency = params.frequency
             if frequency == 'monthly':
                 frequency = 'daily'
@@ -571,16 +592,10 @@ class NASAPowerAgent(IChatBioAgent):
             await process.log(
                 f"Data source: {params.source} (merra2 is the default data source.)"
             )
-
-            if date_range_days == 1:
-                date_info = "exact event date only"
-            else:
-                date_info = f"±{date_range_days//2} days around event"
             
             await process.log(
                 f"Processing {len(locations)} location records\n"
                 f"Parameters: {', '.join(weather_parameters)}\n"
-                f"Date range: {date_info}\n"
                 f"Frequency: {frequency}"
             )
             
@@ -589,7 +604,6 @@ class NASAPowerAgent(IChatBioAgent):
                 enriched_locations = enrich_locations_with_nasa_data(
                     locations=locations,
                     parameters=weather_parameters,
-                    date_range_days=date_range_days,
                     frequency=frequency,
                     source=params.source,
                     temporal=params.temporal,
@@ -691,12 +705,6 @@ class NASAPowerAgent(IChatBioAgent):
                 except Exception as e:
                     await process.log(f"Warning: Failed to create artifact: {str(e)}")
                 
-                # Format a summary
-                if date_range_days == 1:
-                    date_info = "exact event date only"
-                else:
-                    date_info = f"±{date_range_days//2} days around event"
-                
                 summary = (
                     f"**Batch Enrichment Complete**\n\n"
                     f"**Total Records:** {len(enriched_locations)}\n"
@@ -704,7 +712,6 @@ class NASAPowerAgent(IChatBioAgent):
                     f"**Skipped (missing data):** {skipped}\n"
                     f"**Parameters:** {', '.join(weather_parameters)}\n"
                     f"**Source:** {params.source}\n"
-                    f"**Date Range:** {date_info}\n"
                     f"**Frequency:** {frequency}\n"
                 )
                 

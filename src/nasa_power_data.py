@@ -1171,7 +1171,6 @@ def has_valid_nasa_power_data(record: Dict[str, Any]) -> bool:
 def enrich_locations_with_nasa_data(
     locations: List[Dict[str, Any]],
     parameters: List[str] = None,
-    date_range_days: int = 1,
     frequency: str = 'daily',
     source: str = 'merra2',
     temporal: str = 'temporal',
@@ -1194,8 +1193,6 @@ def enrich_locations_with_nasa_data(
             - decimalLatitude: Latitude coordinate or None
             - decimalLongitude: Longitude coordinate or None
         parameters: List of NASA POWER parameters to fetch (default: ['T2M'])
-        date_range_days: Number of days to fetch (default: 1 = exact event date only)
-                        Use values > 1 to fetch a range around the event date
         frequency: Data frequency - 'hourly', 'daily', or 'monthly' (default: 'daily')
         source: Data source (default: 'merra2', options: 'merra2', etc.)
         temporal: Temporal type (default: 'temporal')
@@ -1233,7 +1230,7 @@ def enrich_locations_with_nasa_data(
 
         # Determine date range for this location:
         #  - If startDate/end_date are provided, use them directly.
-        #  - Otherwise, derive a window from eventDate and date_range_days.
+        #  - Otherwise, derive a window from eventDate
         use_explicit_range = bool(start_date_raw and end_date_raw)
         try:
             if use_explicit_range:
@@ -1269,21 +1266,14 @@ def enrich_locations_with_nasa_data(
                     date_str = date_str[:10]
                 center_date = datetime.strptime(date_str, "%Y-%m-%d")
 
-                # Calculate date range from center_date and date_range_days
-                if date_range_days == 1:
-                    # Fetch only the exact event date
-                    start_date = center_date
-                    end_date = center_date
-                else:
-                    # Fetch a range around the event date
-                    half_range = date_range_days // 2
-                    start_date = center_date - timedelta(days=half_range)
-                    end_date = center_date + timedelta(days=half_range)
+                start_date = center_date
+                end_date = center_date
+
         except (ValueError, AttributeError):
             # Invalid date format
             location_validity.append(False)
             continue
-        
+
         # Location is valid
         location_validity.append(True)
         location_center_dates[loc_idx] = center_date
