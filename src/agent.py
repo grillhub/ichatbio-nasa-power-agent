@@ -26,6 +26,7 @@ from .util import (
     parse_geojson_coordinates,
     try_extract_locations_heuristic,
     extract_dates_from_request,
+    last_n_calendar_month_ranges_for_month,
     validate_date,
 )
 
@@ -313,6 +314,38 @@ class NASAPowerAgent(IChatBioAgent):
                     await process.log(
                         f"Using explicit day/month/year parameters; created {len(month_year_ranges)} date ranges "
                         f"from {start_date} to {end_date}."
+                    )
+
+            # 1b) Month in params but year missing/empty: last 5 eligible calendar years (skip future month start)
+            elif params.month and not params.year:
+                try:
+                    months = sorted({int(m) for m in params.month})
+                except ValueError:
+                    await process.log("Invalid month values in params; expected integers as strings.")
+                    await context.reply(
+                        "Error: `month` parameters must be integer strings (1-12) when `year` is omitted."
+                    )
+                    return None
+
+                if any(m < 1 or m > 12 for m in months):
+                    await process.log("Month out of range in params (expected 1-12).")
+                    await context.reply("Error: each `month` value must be between 1 and 12.")
+                    return None
+
+                month_year_ranges = []
+                for month in months:
+                    month_year_ranges.extend(
+                        last_n_calendar_month_ranges_for_month(month, n=5)
+                    )
+
+                if month_year_ranges:
+                    start_date = month_year_ranges[-1][0]
+                    end_date = month_year_ranges[0][1]
+                    date_extracted = True
+                    request_is_month_only = True
+                    await process.log(
+                        f"Using month without year: {len(month_year_ranges)} date range(s) "
+                        f"(up to 5 latest eligible years per month), span {start_date}–{end_date}."
                     )
 
             # 2) If no explicit month, but start_date/end_date are given: trust those

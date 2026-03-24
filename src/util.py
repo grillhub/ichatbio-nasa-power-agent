@@ -1,7 +1,7 @@
 import json
 import re
 from typing import Optional, Self, Iterator, Union, Literal
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 import httpx
 from genson import SchemaBuilder
 from genson.schema.strategies import Object
@@ -467,13 +467,43 @@ def validate_date(date_str: str) -> None:
         raise ValueError(f"Date '{date_str}' is in the future. Please provide a date up to today.")
 
 
+def _last_day_of_month(year: int, month: int) -> int:
+    if month == 12:
+        return 31
+    return (datetime(year, month + 1, 1) - timedelta(days=1)).day
+
+
+def last_n_calendar_month_ranges_for_month(
+    month: int,
+    n: int = 5,
+    *,
+    today: Optional[date] = None,
+) -> list[tuple[str, str]]:
+    if today is None:
+        today = datetime.utcnow().date()
+    years: list[int] = []
+    y = today.year
+    min_year = 1900
+    while len(years) < n and y >= min_year:
+        if date(y, month, 1) <= today:
+            years.append(y)
+        y -= 1
+    ranges: list[tuple[str, str]] = []
+    for year in years:
+        last_day = _last_day_of_month(year, month)
+        start_dt = datetime(year, month, 1)
+        end_dt = datetime(year, month, last_day)
+        ranges.append(
+            (start_dt.strftime("%Y-%m-%d"), end_dt.strftime("%Y-%m-%d"))
+        )
+    return ranges
+
+
 def extract_dates_from_request(
     request: str,
+    *,
+    reference_date: Optional[date] = None,
 ) -> tuple[bool, bool, list[tuple[str, str]], Optional[str], Optional[str]]:
-    """
-    Attempt to extract date information from the natural-language request.
-    Returns (date_extracted, request_is_month_only, month_year_ranges, start_date, end_date).
-    """
     date_extracted: bool = False
     request_is_month_only = False
     month_year_ranges: list[tuple[str, str]] = []
@@ -605,5 +635,33 @@ def extract_dates_from_request(
                             request_is_month_only = True
                         except ValueError:
                             pass
+                    else:
+                        # Month without year: "month of August", "in August" (not "in August 2020")
+                        month_only_match = re.search(
+                            r'(?:during\s+)?(?:the\s+)?(?:month|months)\s+of\s+(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*',
+                            request,
+                            re.IGNORECASE,
+                        )
+                        if not month_only_match:
+                            month_only_match = re.search(
+                                r'\b(?:in|during)\s+(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\b(?!\s*,?\s*\d{4})',
+                                request,
+                                re.IGNORECASE,
+                            )
+                        if month_only_match:
+                            month_name = month_only_match.group(1).lower()
+                            month_map5 = {
+                                'jan': 1, 'feb': 2, 'mar': 3, 'apr': 4, 'may': 5, 'jun': 6,
+                                'jul': 7, 'aug': 8, 'sep': 9, 'oct': 10, 'nov': 11, 'dec': 12
+                            }
+                            month_num = month_map5.get(month_name[:3], 1)
+                            month_year_ranges = last_n_calendar_month_ranges_for_month(
+                                month_num, n=5, today=reference_date
+                            )
+                            if month_year_ranges:
+                                date_extracted = True
+                                request_is_month_only = True
+                                start_date = month_year_ranges[-1][0]
+                                end_date = month_year_ranges[0][1]
 
     return date_extracted, request_is_month_only, month_year_ranges, start_date, end_date
