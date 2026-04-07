@@ -343,6 +343,8 @@ class NASAPowerAgent(IChatBioAgent):
 
     async def _handle_enrich_locations(self, context: ResponseContext, request: str, params: Optional[BatchEnrichParams]):
         """Handle batch enrichment of location records with NASA POWER data"""
+        source_content: dict | list = []
+        generated_locations: Optional[list[dict]] = None
 
         if params.locations_artifact is None:
             async with context.begin_process(summary="Creating locations JSON by extracting from request") as process:
@@ -350,6 +352,8 @@ class NASAPowerAgent(IChatBioAgent):
                 raw_locations = await self._handle_common_query(context, request, params, process)
                 if raw_locations is None:
                     return
+                generated_locations = raw_locations
+                source_content = raw_locations
 
                 artifact = await process.create_artifact(
                     mimetype="application/json",
@@ -378,7 +382,16 @@ class NASAPowerAgent(IChatBioAgent):
             # await process.log(f"Enrich Params: {params}")
 
             try:
-                source_content = await retrieve_artifact_content(params.locations_artifact, process)
+                if generated_locations is not None:
+                    await process.log("Using generated locations from request parameters")
+                    source_content = generated_locations
+                elif params.locations_artifact is not None:
+                    source_content = await retrieve_artifact_content(params.locations_artifact, process)
+                else:
+                    await context.reply(
+                        "Error: No locations were provided. Please provide `address` or `locations_artifact`."
+                    )
+                    return
 
                 if (
                     isinstance(source_content, list)
