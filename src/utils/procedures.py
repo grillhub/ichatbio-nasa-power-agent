@@ -76,9 +76,14 @@ Specifically, the query should generate a list of objects with the following for
     "endDate": <string>
 }
 
-The "startDate" and "endDate" fields MUST be date strings in YYYY-MM-DD format.
+The "startDate" and "endDate" fields identify the observation period. They may be:
+- Date strings in YYYY-MM-DD format, OR
+- Unix time as a number: epoch seconds (e.g. 1167782400) or epoch milliseconds (e.g. 1167782400000),
+  as produced by fields like eventDate in some APIs. Use the numeric value as-is; downstream code
+  will normalize it to YYYY-MM-DD.
+
 If the input schema only has a single date field (i.e. it does not distinguish start vs end),
-set BOTH "startDate" and "endDate" to that same date value.
+set BOTH "startDate" and "endDate" to that same value (string or number, matching the source field).
 
 ONLY generate objects with these EXACT fields and EXACT field names. If you deviate from the above formats, the system
 will crash and the user will be very upset!

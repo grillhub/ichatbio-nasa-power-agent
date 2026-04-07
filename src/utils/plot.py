@@ -5,10 +5,9 @@ from pydantic import BaseModel
 class LabeledGeoPoint(BaseModel):
     latitude: float
     longitude: float
-    startDate: str | None = None
-    endDate: str | None = None
-    date: str | None = None
-    value: float | int | str | None = None
+    startDate: str | int | float | None = None
+    endDate: str | int | float | None = None
+    date: str | int | float | None = None
 
 def render_points_as_geojson(
     map_data: list[LabeledGeoPoint]

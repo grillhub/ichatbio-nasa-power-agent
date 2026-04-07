@@ -26,6 +26,7 @@ equivalence = GEval(
     " are okay.",
     evaluation_params=[LLMTestCaseParams.ACTUAL_OUTPUT, LLMTestCaseParams.EXPECTED_OUTPUT],
     model="gpt-4.1-mini",
+    async_mode=False,
 )
 
 def _get_response_text(messages) -> str:
@@ -113,4 +114,4 @@ async def test_nasa_power_agent_eval(context, messages, httpx_mock, user_message
         expected_output=expected,
         actual_output=actual_output,
     )
-    assert_test(test_case, [equivalence])
+    assert_test(test_case, [equivalence], run_async=False)

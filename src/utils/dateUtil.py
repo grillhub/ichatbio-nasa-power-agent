@@ -14,13 +14,46 @@ def validate_date(date_str: str) -> None:
         raise ValueError(f"Date '{date_str}' is in the future. Please provide a date up to today.")
 
 
+def _epoch_to_ymd(value: int | float) -> str | None:
+    """Convert Unix epoch (seconds or milliseconds) to YYYY-MM-DD in UTC."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    try:
+        # Heuristic: seconds are typically 1e8–2e9; ms are >= 1e10 (JS-style) or > 1e11.
+        # Values > 1e11 cannot be seconds (would be far past year 2100 as Unix seconds).
+        if value > 1e11:
+            secs = value / 1000.0
+        elif value >= 1e10:
+            secs = value / 1000.0
+        elif value > 1e9:
+            secs = float(value)
+        else:
+            return None
+        dt = datetime.fromtimestamp(secs, tz=UTC)
+        return dt.strftime("%Y-%m-%d")
+    except (OSError, ValueError, OverflowError):
+        return None
+
+
 def _normalize_to_ymd(date_str: Any) -> str | None:
     if date_str is None:
         return None
 
+    # Integer/float epoch (seconds or milliseconds), not bool (bool is a subclass of int).
+    if isinstance(date_str, (int, float)) and not isinstance(date_str, bool):
+        ymd = _epoch_to_ymd(date_str)
+        if ymd is not None:
+            return ymd
+
     s = str(date_str).strip()
     if not s:
         return None
+
+    # String that is only digits may be a Unix epoch (seconds or ms), e.g. "1167782400000".
+    if s.isdigit() and len(s) >= 9:
+        ymd = _epoch_to_ymd(int(s))
+        if ymd is not None:
+            return ymd
 
     # Year-only (e.g. "2007") is not usable for NASA POWER daily queries.
     if len(s) == 4 and s.isdigit():

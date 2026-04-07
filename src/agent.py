@@ -31,10 +31,13 @@ def _count_artifact_records(source_content: dict | list) -> int:
     if isinstance(source_content, dict):
         items = source_content.get("items")
         results = source_content.get("results")
+        occurrences = source_content.get("occurrences")
         if isinstance(items, list):
             return len(items)
         if isinstance(results, list):
             return len(results)
+        if isinstance(occurrences, list):
+            return len(occurrences)
     return 0
 
 
