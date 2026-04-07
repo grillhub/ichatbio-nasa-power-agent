@@ -19,6 +19,16 @@ test_cases:
     expected: >-
       Batch enrichment complete with parameter T2M.
       The reply contains 25 total records, 22 Valid records, 62 Valid values
+  - artifact: OBIS_25records_artifact.json
+    user_message: Add temperature data to those records
+    expected: >-
+      Batch enrichment complete with parameter T2M.
+      The reply contains 25 total records, 2 Valid records, 2 Valid values
+  - artifact: ALA_25records_artifact.json
+    user_message: Add temperature data to those records
+    expected: >-
+      Batch enrichment complete with parameter T2M.
+      The reply contains 25 total records, 17 Valid records, 17 Valid values
   - artifact: None
     user_message: Get the temperature in Gainesville,FL on 25 Dec 2025
     expected: >-
