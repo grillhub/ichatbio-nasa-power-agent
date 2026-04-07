@@ -4,13 +4,23 @@ test_cases:
     expected: >-
       Batch enrichment complete with parameter T2M.
       The reply contains 10 total records and 5 successful enriched values by NASA POWER data
-  - artifact: None
-    user_message: Get the temperature in Gainesville,FL on 25 Dec 2025
-    expected: >-
-      Batch enrichment complete with T2M on 2025-12-25.
-      The reply contains 1 total record and 1 sample record value is 18.40
   - artifact: iDigBio_25records_artifact.json
     user_message: Add temperature data to those records
     expected: >-
       Batch enrichment complete with parameter T2M.
       The reply contains 25 total records, 17 Valid records, 17 Valid values
+  - artifact: inaturalist_25records_artifact.json
+    user_message: Add temperature data to those records
+    expected: >-
+      Batch enrichment complete with parameter T2M.
+      The reply contains 25 total records, 25 Valid records, 6 Valid values
+  - artifact: GBIF_25records_artifact.json
+    user_message: Add temperature data to those records
+    expected: >-
+      Batch enrichment complete with parameter T2M.
+      The reply contains 25 total records, 22 Valid records, 62 Valid values
+  - artifact: None
+    user_message: Get the temperature in Gainesville,FL on 25 Dec 2025
+    expected: >-
+      Batch enrichment complete with T2M on 2025-12-25.
+      The reply contains 1 total record and 1 sample record value is 18.40
