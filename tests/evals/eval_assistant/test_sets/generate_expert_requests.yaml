@@ -1,0 +1,7 @@
+test_cases:
+  - user_message: How many records of Rattus rattus are in iDigBio?
+    expected: Retrieve occurrence records of Rattus rattus
+  # - user_message: Count Rattus rattus records
+  #   expected: Count occurrence records for Rattus rattus
+  # - user_message: Where does Rattus rattus live?
+  #   expected: Rattus rattus occurrence records

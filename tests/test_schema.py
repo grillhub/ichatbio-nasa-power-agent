@@ -9,7 +9,7 @@ from openai import AsyncOpenAI
 from pydantic import BaseModel
 from typing_extensions import Self
 
-from conftest import resource
+from resource_loader import resource
 from src.util import (
     extract_json_schema,
     make_validated_location_response_model,

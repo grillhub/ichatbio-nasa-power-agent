@@ -191,9 +191,11 @@ class TestNASAPowerData:
         assert len(result) == 2
         assert all('nasaPowerProperties' in rec for rec in result)
         
-        # Each original field should still be present
+        # eventDate is normalized to YYYY-MM-DD; originalDate preserves raw input
+        expected_dates = ['2023-04-02', '2019-09-09']
         for i, rec in enumerate(result):
-            assert rec['eventDate'] == locations[i]['eventDate']
+            assert rec['eventDate'] == expected_dates[i]
+            assert rec.get('originalDate') == locations[i]['eventDate']
             assert rec['decimalLatitude'] == locations[i]['decimalLatitude']
             assert rec['decimalLongitude'] == locations[i]['decimalLongitude']
     
@@ -341,6 +343,25 @@ class TestNASAPowerData:
         if nasa_props is not None:
             assert len(nasa_props) == 2
     
+    def test_enrich_locations_with_source(self):
+        """Test enrichment with explicit source (e.g. merra2, used by agent)"""
+        locations = [
+            {
+                "eventDate": "2023-04-02T10:39",
+                "decimalLatitude": -50.948586,
+                "decimalLongitude": -72.712978
+            }
+        ]
+        result = enrich_locations_with_nasa_data(
+            locations=locations,
+            parameters=["T2M"],
+            date_range_days=1,
+            frequency="daily",
+            source="merra2",
+        )
+        assert len(result) == 1
+        assert "nasaPowerProperties" in result[0]
+
     def test_enrich_locations_empty_list(self):
         """Test enrichment with empty location list"""
         result = enrich_locations_with_nasa_data(

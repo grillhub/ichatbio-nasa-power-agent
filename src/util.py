@@ -1,5 +1,6 @@
 import json
 import re
+import os
 from typing import Optional, Self, Iterator, Union, Literal
 from datetime import date, datetime, timedelta
 import httpx
@@ -16,6 +17,7 @@ JSON = dict | list | str | int | float | None
 content that is not JSON-serializable."""
 
 Path = list[str]
+LOCALHOST_REPLACEMENT_HOST = os.getenv("LOCALHOST_REPLACEMENT_HOST")
 
 
 def contains_non_null_content(content: JSON):
@@ -132,6 +134,10 @@ async def retrieve_artifact_content(
             await process.log(
                 f"Retrieving artifact {artifact.local_id} content from {url}"
             )
+            
+            if "localhost" in url and LOCALHOST_REPLACEMENT_HOST:
+                url = url.replace("localhost", LOCALHOST_REPLACEMENT_HOST)
+
             response = await internet.get(url)
             if response.is_success:
                 return response.json()  # TODO: catch exception?
@@ -451,217 +457,3 @@ def try_extract_locations_heuristic(content: JSON) -> list[dict] | None:
             out.append({"decimalLatitude": lat, "decimalLongitude": lon, "eventDate": date_val})
 
     return out if out else None
-
-
-def validate_date(date_str: str) -> None:
-    """
-    Validate a date string in YYYY-MM-DD format and ensure it is not in the future.
-    Raises ValueError with a human-readable message if invalid.
-    """
-    try:
-        dt = datetime.strptime(date_str, "%Y-%m-%d")
-    except ValueError as e:
-        raise ValueError(f"Invalid date format '{date_str}'. Please use YYYY-MM-DD.") from e
-
-    if dt.date() > datetime.utcnow().date():
-        raise ValueError(f"Date '{date_str}' is in the future. Please provide a date up to today.")
-
-
-def _last_day_of_month(year: int, month: int) -> int:
-    if month == 12:
-        return 31
-    return (datetime(year, month + 1, 1) - timedelta(days=1)).day
-
-
-def last_n_calendar_month_ranges_for_month(
-    month: int,
-    n: int = 5,
-    *,
-    today: Optional[date] = None,
-) -> list[tuple[str, str]]:
-    if today is None:
-        today = datetime.utcnow().date()
-    years: list[int] = []
-    y = today.year
-    min_year = 1900
-    while len(years) < n and y >= min_year:
-        if date(y, month, 1) <= today:
-            years.append(y)
-        y -= 1
-    ranges: list[tuple[str, str]] = []
-    for year in years:
-        last_day = _last_day_of_month(year, month)
-        start_dt = datetime(year, month, 1)
-        end_dt = datetime(year, month, last_day)
-        ranges.append(
-            (start_dt.strftime("%Y-%m-%d"), end_dt.strftime("%Y-%m-%d"))
-        )
-    return ranges
-
-
-def extract_dates_from_request(
-    request: str,
-    *,
-    reference_date: Optional[date] = None,
-) -> tuple[bool, bool, list[tuple[str, str]], Optional[str], Optional[str]]:
-    date_extracted: bool = False
-    request_is_month_only = False
-    month_year_ranges: list[tuple[str, str]] = []
-    start_date: Optional[str] = None
-    end_date: Optional[str] = None
-
-    # Special case A: phrases like "months of March from 2020 to 2025"
-    range_pattern_a = r'(?:month|months)\s+of\s+(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\s+from\s+(\d{4})\s+to\s+(\d{4})'
-    # Special case B: "March 2020 - 2025" or "March 2020 to 2025"
-    range_pattern_b = r'(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\s+(\d{4})\s*(?:-|to)\s*(\d{4})'
-
-    range_match_a = re.search(range_pattern_a, request, re.IGNORECASE)
-    range_match_b = re.search(range_pattern_b, request, re.IGNORECASE)
-    month_map = {
-        'jan': 1, 'feb': 2, 'mar': 3, 'apr': 4, 'may': 5, 'jun': 6,
-        'jul': 7, 'aug': 8, 'sep': 9, 'oct': 10, 'nov': 11, 'dec': 12
-    }
-
-    if range_match_a or range_match_b:
-        try:
-            if range_match_a:
-                month_name = range_match_a.group(1).lower()
-                start_year = int(range_match_a.group(2))
-                end_year = int(range_match_a.group(3))
-            else:
-                month_name = range_match_b.group(1).lower()
-                start_year = int(range_match_b.group(2))
-                end_year = int(range_match_b.group(3))
-
-            month = month_map.get(month_name[:3], 1)
-            if start_year > end_year:
-                start_year, end_year = end_year, start_year
-
-            # Build a separate (start, end) pair for each year in range
-            for year in range(start_year, end_year + 1):
-                start_dt = datetime(year, month, 1)
-                if month == 12:
-                    end_dt = datetime(year, 12, 31)
-                else:
-                    last_day = (datetime(year, month + 1, 1) - timedelta(days=1)).day
-                    end_dt = datetime(year, month, last_day)
-                month_year_ranges.append((
-                    start_dt.strftime("%Y-%m-%d"),
-                    end_dt.strftime("%Y-%m-%d"),
-                ))
-
-            # For overall metadata, keep the first and last range bounds
-            if month_year_ranges:
-                start_date = month_year_ranges[0][0]
-                end_date = month_year_ranges[-1][1]
-                date_extracted = True
-                request_is_month_only = True
-        except ValueError:
-            pass
-
-    if not date_extracted:
-        # Format 1: YYYY-MM-DD
-        date_pattern = r'(\d{4}-\d{2}-\d{2})'
-        date_matches = re.findall(date_pattern, request)
-        if date_matches:
-            start_date = date_matches[0]
-            end_date = date_matches[-1] if len(date_matches) > 1 else date_matches[0]
-            date_extracted = True
-        else:
-            # Format 2: DD MMM YYYY or DD Month YYYY (e.g., "25 Dec 2024", "25 December 2024")
-            date_pattern2 = r'(\d{1,2})\s+(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\s+(\d{4})'
-            date_match2 = re.search(date_pattern2, request, re.IGNORECASE)
-            if date_match2:
-                try:
-                    day = int(date_match2.group(1))
-                    month_name = date_match2.group(2).lower()
-                    year = int(date_match2.group(3))
-
-                    month_map = {
-                        'jan': 1, 'feb': 2, 'mar': 3, 'apr': 4, 'may': 5, 'jun': 6,
-                        'jul': 7, 'aug': 8, 'sep': 9, 'oct': 10, 'nov': 11, 'dec': 12
-                    }
-                    month = month_map.get(month_name[:3], 1)
-
-                    date_obj = datetime(year, month, day)
-                    start_date = date_obj.strftime("%Y-%m-%d")
-                    end_date = start_date
-                    date_extracted = True
-                except ValueError:
-                    pass
-            else:
-                # Format 3: Month DD, YYYY (e.g., "December 25, 2024", "Dec 25, 2024")
-                date_pattern3 = r'(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\s+(\d{1,2}),?\s+(\d{4})'
-                date_match3 = re.search(date_pattern3, request, re.IGNORECASE)
-                if date_match3:
-                    try:
-                        month_name = date_match3.group(1).lower()
-                        day = int(date_match3.group(2))
-                        year = int(date_match3.group(3))
-
-                        month_map = {
-                            'jan': 1, 'feb': 2, 'mar': 3, 'apr': 4, 'may': 5, 'jun': 6,
-                            'jul': 7, 'aug': 8, 'sep': 9, 'oct': 10, 'nov': 11, 'dec': 12
-                        }
-                        month = month_map.get(month_name[:3], 1)
-
-                        date_obj = datetime(year, month, day)
-                        start_date = date_obj.strftime("%Y-%m-%d")
-                        end_date = start_date
-                        date_extracted = True
-                    except ValueError:
-                        pass
-                else:
-                    # Format 4: Month YYYY (e.g., "March 2020", "in March 2020") - full month range
-                    date_pattern4 = r'(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\s+(\d{4})'
-                    date_match4 = re.search(date_pattern4, request, re.IGNORECASE)
-                    if date_match4:
-                        try:
-                            month_name = date_match4.group(1).lower()
-                            year = int(date_match4.group(2))
-                            month_map = {
-                                'jan': 1, 'feb': 2, 'mar': 3, 'apr': 4, 'may': 5, 'jun': 6,
-                                'jul': 7, 'aug': 8, 'sep': 9, 'oct': 10, 'nov': 11, 'dec': 12
-                            }
-                            month = month_map.get(month_name[:3], 1)
-                            start_date = datetime(year, month, 1).strftime("%Y-%m-%d")
-                            # Last day of month
-                            if month == 12:
-                                end_date = datetime(year, 12, 31).strftime("%Y-%m-%d")
-                            else:
-                                last_day = (datetime(year, month + 1, 1) - timedelta(days=1)).day
-                                end_date = datetime(year, month, last_day).strftime("%Y-%m-%d")
-                            date_extracted = True
-                            request_is_month_only = True
-                        except ValueError:
-                            pass
-                    else:
-                        # Month without year: "month of August", "in August" (not "in August 2020")
-                        month_only_match = re.search(
-                            r'(?:during\s+)?(?:the\s+)?(?:month|months)\s+of\s+(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*',
-                            request,
-                            re.IGNORECASE,
-                        )
-                        if not month_only_match:
-                            month_only_match = re.search(
-                                r'\b(?:in|during)\s+(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\b(?!\s*,?\s*\d{4})',
-                                request,
-                                re.IGNORECASE,
-                            )
-                        if month_only_match:
-                            month_name = month_only_match.group(1).lower()
-                            month_map5 = {
-                                'jan': 1, 'feb': 2, 'mar': 3, 'apr': 4, 'may': 5, 'jun': 6,
-                                'jul': 7, 'aug': 8, 'sep': 9, 'oct': 10, 'nov': 11, 'dec': 12
-                            }
-                            month_num = month_map5.get(month_name[:3], 1)
-                            month_year_ranges = last_n_calendar_month_ranges_for_month(
-                                month_num, n=5, today=reference_date
-                            )
-                            if month_year_ranges:
-                                date_extracted = True
-                                request_is_month_only = True
-                                start_date = month_year_ranges[-1][0]
-                                end_date = month_year_ranges[0][1]
-
-    return date_extracted, request_is_month_only, month_year_ranges, start_date, end_date

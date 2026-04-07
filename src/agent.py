@@ -1,7 +1,7 @@
 from typing import override, Optional, List
 import json
 import re
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 
 from ichatbio.agent import IChatBioAgent
 from ichatbio.agent_response import ResponseContext, IChatBioAgentProcess
@@ -10,31 +10,37 @@ from ichatbio.types import AgentCard, AgentEntrypoint, Artifact
 from pydantic import BaseModel, Field
 from starlette.applications import Starlette
 
-from .nasa_power_data import NASAPowerDataFetcher, COMMON_PARAMETERS, enrich_locations_with_nasa_data, has_valid_nasa_power_data
-from .open_street_map import geocode_address
-from .util import (
-    retrieve_artifact_content,
-    parse_locations_json,
-    extract_json_schema,
-    select_location_properties,
-    LocationPropertyPaths,
-    LocationStringPaths,
-    GeoJSONCoordinatesPaths,
-    GiveUp,
-    read_path,
-    parse_location_string,
-    parse_geojson_coordinates,
-    try_extract_locations_heuristic,
-    extract_dates_from_request,
-    last_n_calendar_month_ranges_for_month,
-    validate_date,
+from nasa_power_data import (
+    NASAPowerDataFetcher,
+    _count_valid_nasa_date_rows,
+    enrich_locations_with_nasa_data,
 )
+from open_street_map import geocode_address
+from utils.procedures import (
+    extract_json_schema,
+    retrieve_artifact_content,
+    extract_map_data_from_json,
+)
+from utils.dateUtil import (
+    sanitize_locations
+)
+
+def _count_artifact_records(source_content: dict | list) -> int:
+    if isinstance(source_content, list):
+        return len(source_content)
+    if isinstance(source_content, dict):
+        items = source_content.get("items")
+        if isinstance(items, list):
+            return len(items)
+    return 0
+
 
 DESCRIPTION = """\
 This agent can do the following:
  - List available NASA POWER parameters: Returns a complete list of all available NASA POWER parameters with their full descriptions. Use this to show/list/display/get all weather and climate parameters (like T2M for temperature, RH2M for humidity, PRECTOTCORR for precipitation, etc.) from the NASA POWER dataset.
  - Enrich locations: Enriches or adds NASA POWER data (e.g. temperature at 2m T2M) to location records. The enriched data is written to the artifact only; each record gets nasaPowerProperties.
  - Query common question: Converts a natural language query or address string into a JSON list of locations (including latitude, longitude, and date range), then enriches those locations with NASA POWER data in the next step. This flow is handled via `enrich_locations`, which internally calls the common query handler before `await self._handle_enrich_locations(context, request, params)`.
+ - Data availability: NASA POWER coverage is generally available for years >= 1981. Older dates are not available from NASA POWER and will be skipped/unavailable.
 
 To use this agent, provide an artifact local_id with location records containing latitude, longitude, and date information. The agent will extract location data from the artifact and enrich it with NASA POWER weather and climate data.
 """
@@ -48,8 +54,8 @@ class BatchEnrichParams(BaseModel):
     day: Optional[List[str]] = Field(default=None)
     month: Optional[List[str]] = Field(default=None)
     year: Optional[List[str]] = Field(default=None)
-    start_date: Optional[str] = Field(default=None)
-    end_date: Optional[str] = Field(default=None)
+    start_range_date: Optional[str] = Field(default=None)
+    end_range_date: Optional[str] = Field(default=None)
     frequency: str = Field(default="daily")
     source: str = Field(default="merra2")
     temporal: str = Field(default="temporal")
@@ -176,292 +182,187 @@ class NASAPowerAgent(IChatBioAgent):
             
             self._cached_parameters = response
             
-            await context.reply(response)
+            # await context.reply(response)
 
-    async def _handle_common_query(self, context: ResponseContext, request: str, params: BatchEnrichParams) -> Optional[Artifact]:
-        """Derive a JSON locations list from a natural language request (no artifact provided)"""
-        async with context.begin_process(summary="Creating locations JSON by extracting from request") as process:
-            process: IChatBioAgentProcess
-            
-            await process.log("Creating locations JSON by extracting from request")
-            await process.log(
-                f"Data source: {params.source} (merra2 is the default data source.)"
-            )
-            await process.log(f"Params: {params}")
-            
-            # Determine address to use: from params or try to extract from request
-            address_to_use = params.address
-            
-            # If no address in params, try to extract location name from request
-            # Look for patterns like "in [Location]", "at [Location]", "for [Location]"
-            if not address_to_use:
-                location_patterns = [
-                    r'in\s+([A-Z][a-zA-Z\s,]+?)(?:\s+at\s+|\s+on\s+|$)',
-                    r'at\s+([A-Z][a-zA-Z\s,]+?)(?:\s+at\s+|\s+on\s+|$)',
-                    r'for\s+([A-Z][a-zA-Z\s,]+?)(?:\s+at\s+|\s+on\s+|$)',
-                ]
-                for pattern in location_patterns:
-                    match = re.search(pattern, request, re.IGNORECASE)
-                    if match:
-                        potential_address = match.group(1).strip()
-                        # Remove date-like patterns from the address
-                        potential_address = re.sub(r'\d{1,2}\s+(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\s+\d{4}', '', potential_address, flags=re.IGNORECASE).strip()
-                        if potential_address and len(potential_address) > 2:
-                            address_to_use = potential_address
-                            break
-            
-            # If address is available (from params or extracted), geocode it to get lat/lon
-            if address_to_use:
-                await process.log(f"Geocoding address: {address_to_use}")
-                geocoded_results = geocode_address(address_to_use)
-                if geocoded_results:
-                    # Display all results to user so they can see all options
-                    if len(geocoded_results) > 1:
-                        results_message = f"Found {len(geocoded_results)} matching locations for '{address_to_use}':\n\n"
-                        for idx, result in enumerate(geocoded_results, 1):
-                            display_name = result.get('display_name', 'Unknown location')
-                            lat = result.get('latitude')
-                            lon = result.get('longitude')
-                            results_message += f"{idx}. {display_name}\n   Coordinates: ({lat}, {lon})\n\n"
-                        results_message += f"Using the first result by default. If you need a different location, please specify more details."
-                        await context.reply(results_message)
-                    
-                    # Use the first result as default
-                    first_result = geocoded_results[0]
-                    latitude = first_result.get('latitude')
-                    longitude = first_result.get('longitude')
-                    display_name = first_result.get('display_name', address_to_use)
-                    await process.log(f"Selected location: {display_name}")
-                    await process.log(f"Using coordinates: ({latitude}, {longitude})")
-                else:
-                    await process.log(f"Failed to geocode address '{address_to_use}'")
-                    await context.reply(
-                        f"**Location not found.** Could not find coordinates for \"{address_to_use}\". "
-                        "Please provide a valid address or specify coordinates (e.g. latitude, longitude)."
-                    )
-                    return
-            
-            # Try to extract coordinates from request (only if address wasn't provided)
-            if not address_to_use:
-                # Look for lat/lon patterns like "40.7128, -74.0060" or "lat: 40.7128, lon: -74.0060"
-                coord_pattern = r'(-?\d+\.?\d*)\s*[,:]\s*(-?\d+\.?\d*)'
-                coord_match = re.search(coord_pattern, request)
-                if coord_match:
-                    try:
-                        latitude = float(coord_match.group(1))
-                        longitude = float(coord_match.group(2))
-                    except ValueError:
-                        pass
-            
-            # Date handling: prefer explicit param arrays for day/month/year; fall back to
-            # start_date/end_date when no month is provided; otherwise parse from request text.
-            date_extracted = False
-            request_is_month_only = False  # True when user gave only month (e.g. March 2020)
-            month_year_ranges: list[tuple[str, str]] = []  # Optional list of (start_date, end_date) pairs
-
-            # 1) Use explicit day/month/year arrays if provided (month and year required)
-            if params.year and params.month:
-                try:
-                    years = sorted({int(y) for y in params.year})
-                    months = sorted({int(m) for m in params.month})
-                except ValueError:
-                    await process.log("Invalid year/month values in params; expected integers as strings.")
-                    await context.reply("Error: `year` and `month` parameters must be integer strings, e.g. year=['2020'], month=['3'].")
-                    return None
-
-                # Determine day range: either explicit list, or full month if day is None
-                explicit_days = None
-                if params.day:
-                    try:
-                        day_ints = sorted({int(d) for d in params.day})
-                        if not day_ints:
-                            explicit_days = None
-                        else:
-                            explicit_days = (day_ints[0], day_ints[-1])
-                    except ValueError:
-                        await process.log("Invalid day values in params; expected integers as strings.")
-                        await context.reply("Error: `day` parameters must be integer strings, e.g. day=['1','2','3'].")
-                        return None
-
-                for year in years:
-                    for month in months:
-                        try:
-                            if explicit_days is not None:
-                                start_day, end_day = explicit_days
-                            else:
-                                start_day = 1
-                                if month == 12:
-                                    end_day = 31
-                                else:
-                                    end_day = (datetime(year, month + 1, 1) - timedelta(days=1)).day
-
-                            start_dt = datetime(year, month, start_day)
-                            end_dt = datetime(year, month, end_day)
-                        except ValueError as e:
-                            await process.log(f"Invalid date constructed from params: {e}")
-                            await context.reply(f"Error: Invalid date in day/month/year parameters: {e}")
-                            return None
-
-                        month_year_ranges.append(
-                            (start_dt.strftime("%Y-%m-%d"), end_dt.strftime("%Y-%m-%d"))
-                        )
-
-                if month_year_ranges:
-                    start_date = month_year_ranges[0][0]
-                    end_date = month_year_ranges[-1][1]
-                    date_extracted = True
-                    request_is_month_only = explicit_days is None
-                    await process.log(
-                        f"Using explicit day/month/year parameters; created {len(month_year_ranges)} date ranges "
-                        f"from {start_date} to {end_date}."
-                    )
-
-            # 1b) Month in params but year missing/empty: last 5 eligible calendar years (skip future month start)
-            elif params.month and not params.year:
-                try:
-                    months = sorted({int(m) for m in params.month})
-                except ValueError:
-                    await process.log("Invalid month values in params; expected integers as strings.")
-                    await context.reply(
-                        "Error: `month` parameters must be integer strings (1-12) when `year` is omitted."
-                    )
-                    return None
-
-                if any(m < 1 or m > 12 for m in months):
-                    await process.log("Month out of range in params (expected 1-12).")
-                    await context.reply("Error: each `month` value must be between 1 and 12.")
-                    return None
-
-                month_year_ranges = []
-                for month in months:
-                    month_year_ranges.extend(
-                        last_n_calendar_month_ranges_for_month(month, n=5)
-                    )
-
-                if month_year_ranges:
-                    start_date = month_year_ranges[-1][0]
-                    end_date = month_year_ranges[0][1]
-                    date_extracted = True
-                    request_is_month_only = True
-                    await process.log(
-                        f"Using month without year: {len(month_year_ranges)} date range(s) "
-                        f"(up to 5 latest eligible years per month), span {start_date}–{end_date}."
-                    )
-
-            # 2) If no explicit month, but start_date/end_date are given: trust those
-            if not date_extracted and (params.start_date is not None or params.end_date is not None) and not params.month:
-                start_date = params.start_date or default_date
-                end_date = params.end_date or start_date
-
-                try:
-                    validate_date(start_date)
-                    validate_date(end_date)
-                except ValueError as e:
-                    # Inform the user about invalid or future dates and stop processing
-                    await process.log(str(e))
-                    await context.reply(str(e))
-                    return None
-
-                date_extracted = True
-                await process.log(
-                    f"Using date range from params: start_date={start_date}, end_date={end_date}"
-                )
-
-            # 3) Otherwise, fall back to parsing dates from the natural language request
-            if not date_extracted:
-                (
-                    date_extracted,
-                    request_is_month_only,
-                    month_year_ranges,
-                    extracted_start_date,
-                    extracted_end_date,
-                ) = extract_dates_from_request(request=request)
-
-                if date_extracted:
-                    # Fallback to today's date if for some reason helper didn't set them
-                    start_date = extracted_start_date or default_date
-                    end_date = extracted_end_date or start_date
-                else:
-                    # Year-only request? (e.g. "in 2020", "2020") -> ask user to specify at least month
-                    year_only_pattern = r'\b(19|20)\d{2}\b'
-                    month_name_pattern = r'(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*'
-                    if re.search(year_only_pattern, request) and not re.search(month_name_pattern, request, re.IGNORECASE):
-                        await process.log("Request specifies a year but no month; asking user to specify at least the month.")
-                        await context.reply(
-                            "Please specify at least the **month** (e.g. March 2020). "
-                            "Different months represent different seasons, so we cannot compute a meaningful average for a whole year."
-                        )
-                        return None
-
-                    # No usable date information at all – stop here and tell user
-                    await process.log(f"No date found in request; not creating locations JSON.")
-                    await context.reply(
-                        "I couldn't find any date information in your request. "
-                        "Please include a date or date range, for example:\n"
-                        "- \"... on 2024-03-15\"\n"
-                        "- \"... in March 2024\"\n"
-                        "- \"... in March 2020-2025\""
-                    )
-                    return None
-            
-            # Build locations list from the resolved coordinates and date range(s)
-            if month_year_ranges:
-                await process.log(
-                    f"Creating locations JSON with {len(month_year_ranges)} repeated-month ranges "
-                    f"for coordinates ({latitude}, {longitude})"
-                )
-                locations = [
-                    {
-                        "decimalLatitude": float(latitude),
-                        "decimalLongitude": float(longitude),
-                        "startDate": sd,
-                        "end_date": ed,
-                    }
-                    for (sd, ed) in month_year_ranges
-                ]
+    async def _handle_common_query(self,
+        context: ResponseContext,
+        request: str,
+        params: BatchEnrichParams,
+        process: IChatBioAgentProcess) -> Optional[List[dict]]:
+        
+        await process.log("Creating locations JSON by extracting from request")
+        await process.log(
+            f"Data source: {params.source} (merra2 is the default data source.)"
+        )
+        await process.log(f"Common Query Params: {params}")
+        
+        address_to_use = params.address
+        if address_to_use:
+            await process.log(f"Geocoding address: {address_to_use}")
+            geocoded_results = geocode_address(address_to_use)
+            if geocoded_results:
+                if len(geocoded_results) > 1:
+                    results_message = f"Found {len(geocoded_results)} matching locations for '{address_to_use}':\n\n"
+                    for idx, result in enumerate(geocoded_results, 1):
+                        display_name = result.get('display_name', 'Unknown location')
+                        lat = result.get('latitude')
+                        lon = result.get('longitude')
+                        results_message += f"{idx}. {display_name}\n   Coordinates: ({lat}, {lon})\n\n"
+                    results_message += f"Using the first result by default. If you need a different location, please specify more details."
+                    await context.reply(results_message)
+                
+                # Use the first result as default
+                first_result = geocoded_results[0]
+                latitude = first_result.get('latitude')
+                longitude = first_result.get('longitude')
+                display_name = first_result.get('display_name', address_to_use)
+                await process.log(f"Selected location: {display_name}")
+                await process.log(f"Using coordinates: ({latitude}, {longitude})")
             else:
-                await process.log(
-                    f"Creating locations JSON from request:\n"
-                    f"  Location: ({latitude}, {longitude})\n"
-                    f"  Start Date: {start_date}\n"
-                    f"  End Date: {end_date}"
+                await process.log(f"Failed to geocode address '{address_to_use}'")
+                await context.reply(
+                    f"**Location not found.** Could not find coordinates for \"{address_to_use}\". "
+                    "Please provide a valid address or specify coordinates (e.g. latitude, longitude)."
                 )
-                locations = [
-                    {
-                        "decimalLatitude": float(latitude),
-                        "decimalLongitude": float(longitude),
-                        "startDate": start_date,
-                        "end_date": end_date,
-                    }
-                ]
+                return
+        else:
+            await process.log("No address provided; will try to extract coordinates from request")
+            await context.reply("No address provided; will try to extract coordinates from request")
+            return
 
-            try:
-                artifact = await process.create_artifact(
-                    mimetype="application/json",
-                    description="Location records derived from natural language request",
-                    content=json.dumps(locations).encode("utf-8"),
-                    metadata={
-                        "format": "json",
-                        "source": "request",
-                        "derived_from": "common_query",
-                        "request_is_month_only": request_is_month_only,
-                    },
-                )
-                await process.log("Created locations artifact from common query")
-                return artifact
-            except Exception as e:
-                await process.log(f"Failed to create locations artifact: {str(e)}")
-                await context.reply(f"Error: Failed to create locations artifact from request: {str(e)}")
-                return None
-    
+        if params.start_range_date and params.end_range_date:
+            return [{
+                    "decimalLatitude": float(latitude),
+                    "decimalLongitude": float(longitude),
+                    "startDate": params.start_range_date,
+                    "endDate": params.end_range_date
+                }]
+            # artifact = await process.create_artifact(
+            #     mimetype="application/json",
+            #     description="Locations from address and start/end range date",
+            #     content=json.dumps([                    {
+            #         "decimalLatitude": float(latitude),
+            #         "decimalLongitude": float(longitude),
+            #         "startDate": params.start_range_date,
+            #         "endDate": params.end_range_date
+            #     }]).encode("utf-8"),
+            #     metadata={
+            #         "format": "json"
+            #     },
+            # )
+            # await process.log("Created locations artifact")
+            # return artifact
+
+        days = []
+        months = []
+        years = []
+        try:
+            if params.day:
+                days = sorted({int(d) for d in params.day})
+            if params.month:
+                months = sorted({int(m) for m in params.month})
+            if params.year:
+                years = sorted({int(y) for y in params.year})
+        except ValueError:
+            await process.log("Invalid year/month/day values in params; expected integers as strings.")
+            await context.reply("Error: `year`, `month`, and `day` parameters must be integer strings, e.g. year=['2020'], month=['3'], day=['1','2','3'].")
+            return None
+
+        locations: list[dict] = []
+
+        if len(months) == 0:
+            await process.log(
+                "Common query cannot proceed: `month` is empty. Months tie to seasons, so without a month "
+                "we cannot choose meaningful dates or climate context."
+            )
+            await context.reply(
+                "Error: Provide at least one `month` (e.g. month=['1','3']). Each month corresponds to a "
+                "season; without a month we cannot infer dates or season-related values for you."
+            )
+            return None
+
+        if len(years) == 0:
+            cy = datetime.now(UTC).year
+            years = [cy - 2, cy - 1, cy]
+            await process.log(
+                f"No `year` in params (user may not have a specific year in mind); "
+                f"using the latest three calendar years {years} (UTC)."
+            )
+
+        for y in years:
+            for m in months:
+                if len(days) > 0:
+                    for d in days:
+                        try:
+                            date_str = datetime(y, m, d).strftime("%Y-%m-%d")
+                        except ValueError:
+                            await process.log(f"Invalid calendar date: year={y}, month={m}, day={d}")
+                            continue
+                        locations.append(
+                            {
+                                "decimalLatitude": float(latitude),
+                                "decimalLongitude": float(longitude),
+                                "startDate": date_str,
+                                "endDate": date_str
+                            }
+                        )
+                else:
+                    try:
+                        start_str = datetime(y, m, 1).strftime("%Y-%m-%d")
+                        if m == 12:
+                            last_day = 31
+                        else:
+                            last_day = (datetime(y, m + 1, 1) - timedelta(days=1)).day
+                        end_str = datetime(y, m, last_day).strftime("%Y-%m-%d")
+                    except ValueError:
+                        await process.log(f"Invalid year/month: year={y}, month={m}")
+                        continue
+                    locations.append(
+                        {
+                            "decimalLatitude": float(latitude),
+                            "decimalLongitude": float(longitude),
+                            "startDate": start_str,
+                            "endDate": end_str
+                        }
+                    )
+        # for location in locations:
+        return locations
+        
+        # artifact = await process.create_artifact(
+        #     mimetype="application/json",
+        #     description="Locations from address and year/month/day",
+        #     content=json.dumps(locations).encode("utf-8"),
+        #     metadata={
+        #         "format": "json",
+        #         "source": "common_query",
+        #         "record_count": len(locations),
+        #     },
+        # )
+        # await process.log(f"Created locations artifact with {json.dumps(artifact)}")
+        # return artifact
+
     async def _handle_enrich_locations(self, context: ResponseContext, request: str, params: Optional[BatchEnrichParams]):
         """Handle batch enrichment of location records with NASA POWER data"""
 
         if params.locations_artifact is None:
-            locations_artifact = await self._handle_common_query(context, request, params)
-            if locations_artifact is None:
-                return
-            params.locations_artifact = locations_artifact
+            async with context.begin_process(summary="Creating locations JSON by extracting from request") as process:
+                process: IChatBioAgentProcess
+                raw_locations = await self._handle_common_query(context, request, params, process)
+                if raw_locations is None:
+                    return
+
+                artifact = await process.create_artifact(
+                    mimetype="application/json",
+                    description="Locations from address and year/month/day",
+                    content=json.dumps(raw_locations).encode("utf-8"),
+                    metadata={
+                        "format": "json",
+                        "source": "common_query",
+                        "record_count": len(raw_locations),
+                    },
+                )
+                await process.log("Created locations artifact")
+                params.locations_artifact = artifact
 
         async with context.begin_process(summary="Enriching records with NASA POWER data") as process:
             process: IChatBioAgentProcess
@@ -474,141 +375,70 @@ class NASAPowerAgent(IChatBioAgent):
             
             locations = None
 
+            # await process.log(f"Enrich Params: {params}")
+
             try:
-                locations = await retrieve_artifact_content(params.locations_artifact, process)
-                
-                # If locations already have decimalLatitude/decimalLongitude and a start/end range,
-                # use them directly without schema inference.
+                source_content = await retrieve_artifact_content(params.locations_artifact, process)
+
                 if (
-                    isinstance(locations, list)
-                    and locations
-                    and isinstance(locations[0], dict)
-                    and "decimalLatitude" in locations[0]
-                    and "decimalLongitude" in locations[0]
-                    and ("startDate" in locations[0] or "end_date" in locations[0])
+                    isinstance(source_content, list)
+                    and source_content
+                    and isinstance(source_content[0], dict)
+                    and "decimalLatitude" in source_content[0]
+                    and "decimalLongitude" in source_content[0]
+                    and ("startDate" in source_content[0] or "endDate" in source_content[0])
                 ):
-                    await process.log("Using provided locations with startDate/end_date fields directly")
+                    await process.log("Using provided locations with startDate/endDate fields directly")
+                    locations = [
+                        {
+                            "decimalLatitude": float(r["decimalLatitude"]),
+                            "decimalLongitude": float(r["decimalLongitude"]),
+                            "startDate": r["startDate"],
+                            "endDate": r.get("endDate", r["startDate"])
+                        }
+                        for r in source_content
+                    ]
+                    locations = await sanitize_locations(locations, process)
                 else:
-                    # Extract schema and select location properties
-                    schema = extract_json_schema(locations)
-                    await process.log("Extracted JSON schema from artifact content")
-                    
-                    selection_result = await select_location_properties(request, schema)
+                    schema = extract_json_schema(source_content)
+                    await process.log(f"Extracted JSON schema from artifact content")
 
-                    await process.log(f"Selection result: {selection_result}")
+                    points = await extract_map_data_from_json(
+                        request=request,
+                        source_content=source_content,
+                        schema=schema,
+                        artifact=params.locations_artifact,
+                        process=process,
+                    )
+                    if points is None:
+                        await context.reply(
+                            "Error: Could not extract geographic points and dates from the artifact "
+                            "(JQ/LLM extraction failed). Ensure records include coordinates and dates "
+                            "(e.g. startDate/endDate or eventDate), or verify ICHATBIO_JQ_MODEL / API access."
+                        )
+                        return
 
-                    match selection_result:
-                        case LocationPropertyPaths() as paths:
-                            await process.log(
-                                "Using scalar field paths for location extraction",
-                                data={
-                                    "format": "scalar_fields",
-                                    "latitude": paths.latitude,
-                                    "longitude": paths.longitude,
-                                    "date": paths.date,
-                                },
-                            )
-                            
-                            # Extract values using the paths
-                            latitudes = list(read_path(locations, paths.latitude))
-                            longitudes = list(read_path(locations, paths.longitude))
-                            dates = list(read_path(locations, paths.date))
-                            
-                            # Reconstruct locations array with standard field names
-                            locations = []
-                            for lat, lon, date in zip(latitudes, longitudes, dates):
-                                if lat is not None and lon is not None and date is not None:
-                                    locations.append({
-                                        "decimalLatitude": float(lat) if lat is not None else None,
-                                        "decimalLongitude": float(lon) if lon is not None else None,
-                                        "eventDate": str(date) if date is not None else None,
-                                    })
-                            
-                            await process.log(f"Extracted {len(locations)} location records using scalar field paths")
-                        
-                        # case LocationStringPaths() as paths:
-                        #     await process.log(
-                        #         "Using location string path for location extraction",
-                        #         data={
-                        #             "format": "location_string",
-                        #             "location_string": paths.location_string,
-                        #             "date": paths.date,
-                        #         },
-                        #     )
-                            
-                        #     # Extract values using the paths
-                        #     location_strings = list(read_path(locations, paths.location_string))
-                        #     dates = list(read_path(locations, paths.date))
-                            
-                        #     # Parse location strings and reconstruct locations array
-                        #     locations = []
-                        #     for loc_str, date in zip(location_strings, dates):
-                        #         parsed = parse_location_string(loc_str)
-                        #         if parsed is not None and date is not None:
-                        #             lat, lon = parsed
-                        #             locations.append({
-                        #                 "decimalLatitude": lat,
-                        #                 "decimalLongitude": lon,
-                        #                 "eventDate": str(date) if date is not None else None,
-                        #             })
-                            
-                        #     await process.log(f"Extracted {len(locations)} location records using location string format")
-                        
-                        case GeoJSONCoordinatesPaths() as paths:
-                            await process.log(
-                                "Using GeoJSON coordinates path for location extraction",
-                                data={
-                                    "format": "geojson_coordinates",
-                                    "coordinates": paths.coordinates,
-                                    "date": paths.date,
-                                },
-                            )
-                            
-                            # Extract values using the paths
-                            coordinates_list = list(read_path(locations, paths.coordinates))
-                            dates = list(read_path(locations, paths.date))
-                            
-                            # Parse GeoJSON coordinates and reconstruct locations array
-                            locations = []
-                            for coords, date in zip(coordinates_list, dates):
-                                parsed = parse_geojson_coordinates(coords)
-                                if parsed is not None and date is not None:
-                                    lat, lon = parsed
-                                    locations.append({
-                                        "decimalLatitude": lat,
-                                        "decimalLongitude": lon,
-                                        "eventDate": str(date) if date is not None else None,
-                                    })
-                            
-                            await process.log(f"Extracted {len(locations)} location records using GeoJSON coordinates format")
-                            
-                        case GiveUp(reason=reason):
-                            await process.log(f"Failed to identify location property paths: {reason}")
-                            await process.log(
-                                "Attempting heuristic extraction for iNaturalist-like JSON "
-                                "(geojson.coordinates, location string, observed_on/time_observed_at)"
-                            )
-                            extracted = try_extract_locations_heuristic(locations)
-                            if extracted is not None:
-                                locations = extracted
-                                await process.log(
-                                    f"Extracted {len(locations)} location records using heuristic fallback"
-                                )
-                            else:
-                                await context.reply(
-                                    "Error: Could not extract location records from the artifact. "
-                                    "The schema supports: separate latitude/longitude fields, a 'latitude,longitude' "
-                                    "string (e.g. `location`), or GeoJSON `coordinates` [lon,lat]. "
-                                    "A heuristic for iNaturalist-like JSON (e.g. `results[].geojson.coordinates`, "
-                                    "`results[].location`, `observed_on`) also did not find any valid records."
-                                )
-                                return
+                    locations = [
+                        {
+                            "decimalLatitude": float(p.latitude),
+                            "decimalLongitude": float(p.longitude),
+                            "startDate": (p.startDate or p.date),
+                            "endDate": (p.endDate or p.date)
+                        }
+                        for p in points
+                    ]
+                    print(f"Locations: {locations}")
+
+                    locations = await sanitize_locations(locations, process)
+
+                    # await process.log(
+                    #     f"Extracted {len(locations)} location record(s) using JQ-based extraction"
+                    # )
                         
             except ValueError:
                 await context.reply("Error: Failed to retrieve the locations artifact content.")
                 return
 
-            # Validate that locations is a list
             if not isinstance(locations, list):
                 await context.reply("Error: Location data must be a JSON array of location records")
                 return
@@ -621,159 +451,84 @@ class NASAPowerAgent(IChatBioAgent):
             frequency = params.frequency
             if frequency == 'monthly':
                 frequency = 'daily'
-
-            await process.log(
-                f"Data source: {params.source} (merra2 is the default data source.)"
-            )
-            
-            await process.log(
-                f"Processing {len(locations)} location records\n"
-                f"Parameters: {', '.join(weather_parameters)}\n"
-                f"Frequency: {frequency}"
-            )
             
             try:
-                # Enrich the locations
-                enriched_locations = enrich_locations_with_nasa_data(
+                await process.log(f"Enriching locations with NASA POWER data...")
+
+                enriched_locations = await enrich_locations_with_nasa_data(
                     locations=locations,
                     parameters=weather_parameters,
                     frequency=frequency,
                     source=params.source,
                     temporal=params.temporal,
-                    time=params.time
+                    time_standard=params.time,
+                    process=process,
                 )
-                
-                successful = sum(1 for loc in enriched_locations if has_valid_nasa_power_data(loc))
-                skipped = len(enriched_locations) - successful
-                valid_enriched_locations = [loc for loc in enriched_locations if has_valid_nasa_power_data(loc)]
-                
-                # Check for errors in enriched locations
-                errors_found = []
-                for i, loc in enumerate(enriched_locations):
-                    nasa_props = loc.get('nasaPowerProperties')
-                    if nasa_props and isinstance(nasa_props, list):
-                        for prop in nasa_props:
-                            if isinstance(prop, dict) and 'error' in prop:
-                                error_msg = prop.get('error', 'Unknown error')
-                                param = prop.get('parameter', 'Unknown parameter')
-                                errors_found.append(f"Location {i+1} ({param}): {error_msg}")
-                
-                artifact_locations = []
-                for loc in enriched_locations:
-                    rec = dict(loc)
-                    if not has_valid_nasa_power_data(loc):
-                        rec["nasaPowerProperties"] = None
-                    artifact_locations.append(rec)
-
-                log_msg = f"Successfully enriched {successful} records\nSkipped {skipped} records (missing data)"
-                if errors_found:
-                    # Log first few errors as examples
-                    error_samples = errors_found[:5]
-                    log_msg += f"\n\nErrors encountered ({len(errors_found)} total):"
-                    for err in error_samples:
-                        log_msg += f"\n  - {err}"
-                    if len(errors_found) > 5:
-                        log_msg += f"\n  ... and {len(errors_found) - 5} more errors"
-                
-                await process.log(log_msg)
+                valid_date_rows = _count_valid_nasa_date_rows(enriched_locations)
                 await process.log(
-                    f"Enriched {successful} location records with NASA POWER data (out of {len(enriched_locations)} total)",
+                    f"Enriched {len(enriched_locations)} location record(s) with NASA POWER data "
+                    f"Successfully get NASA POWER data for {valid_date_rows} date/value rows",
                     data={
                         "source": [params.source] if params.source else [],
                         "parameters": weather_parameters,
                         "frequency": frequency,
-                        "total_records": len(enriched_locations),
-                        "enriched_records": successful
+                        "total_enriched_records": len(enriched_locations),
+                        "valid_date_value_rows": valid_date_rows,
                     }
                 )
-                # Log each location's data
-                for i, loc in enumerate(enriched_locations):
-                    event_date = loc.get('eventDate', 'N/A')
-                    lat = loc.get('decimalLatitude')
-                    lon = loc.get('decimalLongitude')
-                    nasa_props = loc.get('nasaPowerProperties')
-                    
-                    location_info = f"Location {i+1}: Date={event_date}, Lat={lat}, Lon={lon}"
-                    
-                    if nasa_props and isinstance(nasa_props, list) and len(nasa_props) > 0:
-                        param_values = []
-                        for prop in nasa_props:
-                            if isinstance(prop, dict):
-                                param = prop.get('parameter', 'N/A')
-                                param_desc = prop.get('parameter_description', '')
-                                data_list = prop.get('data', [])
-                                if data_list and len(data_list) > 0:
-                                    value = data_list[0].get('value')
-                                    date = data_list[0].get('date', 'N/A')
-                                    if value is not None:
-                                        param_values.append(f"{param}={value:.2f} ({date})")
-                                    else:
-                                        param_values.append(f"{param}=N/A ({date})")
-                        
-                        if param_values:
-                            location_info += f"\n  Parameters: {', '.join(param_values)}"
-                        else:
-                            location_info += "\n  No parameter data available"
-                    else:
-                        location_info += "\n  No NASA POWER data available"
-                    
-                    # await process.log(location_info)
                 
-                # Create artifact from enriched locations data (all records; nasaPowerProperties = null where data has null values)
                 try:
                     await process.create_artifact(
                         mimetype="application/json",
                         description=f"Location records enriched with NASA POWER data",
-                        content=json.dumps(artifact_locations).encode("utf-8"),
+                        content=json.dumps(enriched_locations).encode("utf-8"),
                         metadata={
                             "format": "json",
                             "source": "NASA POWER",
                             "parameters": weather_parameters,
                             "frequency": frequency,
                             "total_records": len(enriched_locations),
-                            "enriched_records": successful
                         }
                     )
-                    await process.log(f"Created artifact with {len(artifact_locations)} location records ({successful} enriched, {skipped} skipped)")
+                    await process.log(f"Created artifact with {len(enriched_locations)} location record(s)")
                 except Exception as e:
                     await process.log(f"Warning: Failed to create artifact: {str(e)}")
+
+                print(f"Enriched locations: {json.dumps(enriched_locations, indent=4)}")
                 
                 summary = (
                     f"**Batch Enrichment Complete**\n\n"
-                    f"**Total Records:** {len(enriched_locations)}\n"
-                    f"**Successfully Enriched:** {successful}\n"
-                    f"**Skipped (missing data):** {skipped}\n"
+                    f"**Total Records from artifact:** {_count_artifact_records(source_content)}\n"
+                    f"**Enriched locations (Valid records):** {len(enriched_locations)} location records\n"
+                    f"**Successful get NASA POWER data (Valid values):** {valid_date_rows} date/value records\n"
                     f"**Parameters:** {', '.join(weather_parameters)}\n"
                     f"**Source:** {params.source}\n"
                     f"**Frequency:** {frequency}\n"
                 )
-                
-                if errors_found:
-                    summary += f"\n**Errors Encountered:** {len(errors_found)} error(s) occurred during data fetching.\n"
-                    summary += "Common causes: parameter not available in specified source, invalid Zarr URL, or data unavailable for the date range.\n"
-                    if len(errors_found) <= 3:
-                        summary += "\n**Error Details:**\n"
-                        for err in errors_found:
-                            summary += f"  - {err}\n"
-                    else:
-                        summary += f"\n**Sample Errors (showing first 3 of {len(errors_found)}):**\n"
-                        for err in errors_found[:3]:
-                            summary += f"  - {err}\n"
-                    summary += "\n"
 
-                # Show sample enriched records (only those with valid non-null data)
-                valid_records = valid_enriched_locations
-                if valid_records:
+                if enriched_locations:
                     summary += "**Sample Enriched Record:**\n"
-                    sample = valid_records[0]
-                    summary += f"  - Event Date: {sample.get('eventDate')}\n"
+                    sample = enriched_locations[0]
+                    summary += f"  - Start Date: {sample.get('startDate')}\n"
+                    summary += f"  - End Date: {sample.get('endDate')}\n"
                     summary += f"  - Location: ({sample.get('decimalLatitude')}, {sample.get('decimalLongitude')})\n"
-                    if sample.get('nasaPowerProperties'):
-                        nasa_data = sample['nasaPowerProperties'][0]
-                        if 'data' in nasa_data and len(nasa_data['data']) > 0:
-                            first_data = nasa_data['data'][0]
-                            value_str = f"{first_data['value']:.2f}" if first_data['value'] is not None else "null"
-                            summary += f"  - {nasa_data.get('parameter')}: {first_data['date']} = {value_str}\n"
+                    props = sample.get("nasaPowerProperties")
+                    if props:
+                        nasa_data = props[0] if isinstance(props, list) else props
+                        if isinstance(nasa_data, dict):
+                            series = nasa_data.get("data")
+                            if isinstance(series, list) and len(series) > 0:
+                                first_data = series[0]
+                                if isinstance(first_data, dict):
+                                    raw_val = first_data.get("value")
+                                    if raw_val is not None and isinstance(raw_val, (int, float)):
+                                        value_str = f"{raw_val:.2f}"
+                                    else:
+                                        value_str = "null"
+                                    summary += (
+                                        f"  - {nasa_data.get('parameter')}: "
+                                        f"{first_data.get('date')} = {value_str}\n"
+                                    )
                 
                 summary += "\nArtifact with enriched location records is available."
                 

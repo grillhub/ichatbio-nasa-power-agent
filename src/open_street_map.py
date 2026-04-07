@@ -12,16 +12,6 @@ from typing import Optional, List, Dict
 def geocode_address(address: str, timeout: float = 10.0) -> Optional[List[Dict]]:
     """
     Geocode an address/location string to latitude and longitude using OpenStreetMap Nominatim API.
-    
-    Returns a list of all matching results, each containing:
-    - 'display_name': Full display name of the location
-    - 'lat': Latitude as string
-    - 'lon': Longitude as string
-    - 'latitude': Latitude as float
-    - 'longitude': Longitude as float
-    - Other fields from Nominatim API response
-    
-    Returns None if no results found or on error.
     """
     if not address or not address.strip():
         return None
