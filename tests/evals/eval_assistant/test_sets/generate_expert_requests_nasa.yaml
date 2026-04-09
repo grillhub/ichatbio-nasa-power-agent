@@ -1,36 +1,57 @@
 test_cases:
+# Test cases with artifacts
   - artifact: list_of_locations_10.json
     user_message: Add temperature data to those records
     expected: >-
       Batch enrichment complete with parameter T2M.
       The reply contains 10 total records and 5 successful enriched values by NASA POWER data
+
   - artifact: iDigBio_25records_artifact.json
     user_message: Add temperature data to those records
     expected: >-
       Batch enrichment complete with parameter T2M.
-      The reply contains 25 total records, 17 Valid records, 17 Valid values
+      The reply contains 25 total records, 17 Valid records, 17 Valid date/values
+
   - artifact: inaturalist_25records_artifact.json
     user_message: Add temperature data to those records
     expected: >-
       Batch enrichment complete with parameter T2M.
-      The reply contains 25 total records, 25 Valid records, 6 Valid values
+      The reply contains 25 total records, 25 Valid records, 6 Valid date/values
+
   - artifact: GBIF_25records_artifact.json
     user_message: Add temperature data to those records
     expected: >-
       Batch enrichment complete with parameter T2M.
-      The reply contains 25 total records, 22 Valid records, 62 Valid values
+      The reply contains 25 total records, 22 Valid records, 62 Valid date/values
+
   - artifact: OBIS_25records_artifact.json
     user_message: Add temperature data to those records
     expected: >-
       Batch enrichment complete with parameter T2M.
-      The reply contains 25 total records, 2 Valid records, 2 Valid values
+      The reply contains 25 total records, 2 Valid records, 2 Valid date/values
+
   - artifact: ALA_25records_artifact.json
     user_message: Add temperature data to those records
     expected: >-
       Batch enrichment complete with parameter T2M.
       The reply contains 25 total records, 17 Valid records, 17 Valid values
+
+# Test cases no artifacts
   - artifact: None
-    user_message: Get the temperature in Gainesville,FL on 25 Dec 2025
+    user_message: Get the temperature in Gainesville, FL on 25 Dec 2025
     expected: >-
       Batch enrichment complete with T2M on 2025-12-25.
       The reply contains 1 total record and 1 sample record value is 18.40
+  - artifact: None
+    user_message: Get the temperature in Grillville, FL on 25 Dec 2025
+    expected: The location 'Grillville, FL' could not be found
+  - artifact: None
+    user_message: Get average temperature in Gainesville, FL on March 2020
+    expected: >-
+      Batch enrichment complete with parameter T2M.
+      The reply contains 1 total records, 1 Valid records, 31 Valid date/values
+  - artifact: None
+    user_message: Get average temperature in Gainesville, FL on March 2020 - 2025
+    expected: >-
+      Batch enrichment complete with parameter T2M.
+      The reply contains 6 total records, 6 Valid records, 186 Valid date/values (31*6 = 1-31 on March for 2020-2025)

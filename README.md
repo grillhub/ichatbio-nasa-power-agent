@@ -23,6 +23,34 @@ python -m pytest -v
 python -m pytest tests/test_nasa_power_data.py -v
 ```
 
+### Allure reports
+
+Install the pytest integration:
+
+```bash
+python3.13 -m pip install allure-pytest
+```
+
+Generate Allure result files for the NASA POWER agent eval suite:
+
+```bash
+python3.13 -m pytest -vv tests/evals/eval_assistant/test_nasa_power_agent.py --alluredir=allure-results
+```
+
+**View results as a dashboard** — from the project root, start the Allure Docker service (mounts `allure-results` from the current directory):
+
+```bash
+cd ~/ichatbio-nasa-power-agent
+docker run -d \
+  --name allure \
+  -p 5050:5050 \
+  -e CHECK_RESULTS_EVERY_SECONDS=3 \
+  -v $(pwd)/allure-results:/app/allure-results \
+  frankescobar/allure-docker-service
+```
+
+Open the latest report in your browser: [http://localhost:5050/allure-docker-service/latest-report](http://localhost:5050/allure-docker-service/latest-report)
+
 ## Security & Privacy
 
 - No authentication required (public NASA data)
