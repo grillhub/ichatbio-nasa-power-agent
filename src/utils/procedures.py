@@ -101,7 +101,7 @@ async def extract_map_data_from_json(
             source_content=source_content,
             source_artifact=artifact
         )
-        await process.log("Generated JQ query string", data={"generation": generation, "query_result": query_result})
+        # await process.log("Generated JQ query string", data={"generation": generation, "query_result": query_result})
         
     except InstructorRetryException:
         await process.log("Failed to generate JQ query string")

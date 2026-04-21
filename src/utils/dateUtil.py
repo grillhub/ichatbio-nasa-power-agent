@@ -79,23 +79,31 @@ def _normalize_to_ymd(date_str: Any) -> str | None:
     return None
 
 
-async def sanitize_locations(locations: list[dict[str, Any]], process: Any) -> list[dict[str, Any]]:
+def sanitize_locations(
+    locations: list[dict[str, Any]],
+) -> tuple[list[dict[str, Any]], dict[str, int]]:
     sanitized: list[dict[str, Any]] = []
+    error_count: dict[str, int] = {
+        "lat_long_valid": 0,
+        "lat_long_range": 0,
+        "start_date_year_only": 0,
+        "end_date_year_only": 0,
+        "dates_missing_or_unsupported": 0,
+        "year_parse_failed": 0,
+        "year_before_1981": 0,
+        "date_validation_failed": 0,
+    }
 
-    for idx, loc in enumerate(locations):
+    for loc in locations:
         try:
             lat = float(loc.get("decimalLatitude"))
             lon = float(loc.get("decimalLongitude"))
         except (TypeError, ValueError):
-            await process.log(
-                f"Location {idx + 1}: skipped — latitude or longitude is missing or not a valid number."
-            )
+            error_count["lat_long_valid"] += 1
             continue
 
         if not (-90 <= lat <= 90) or not (-180 <= lon <= 180):
-            await process.log(
-                f"Location {idx + 1}: skipped — latitude must be between -90 and 90, longitude between -180 and 180."
-            )
+            error_count["lat_long_range"] += 1
             continue
 
         # --- Date normalization ---
@@ -118,44 +126,32 @@ async def sanitize_locations(locations: list[dict[str, Any]], process: Any) -> l
         end_norm = _normalize_to_ymd(raw_end)
 
         if raw_start is not None and start_norm is None and len(str(raw_start).strip()) == 4 and str(raw_start).strip().isdigit():
-            await process.log(
-                f"Location {idx + 1}: skipped — start date is only a year ({raw_start}). Use a full date, for example 2007-06-19."
-            )
+            error_count["start_date_year_only"] += 1
             continue
         if raw_end is not None and end_norm is None and len(str(raw_end).strip()) == 4 and str(raw_end).strip().isdigit():
-            await process.log(
-                f"Location {idx + 1}: skipped — end date is only a year ({raw_end}). Use a full date, for example 2007-06-19."
-            )
+            error_count["end_date_year_only"] += 1
             continue
 
         if not start_norm or not end_norm:
-            await process.log(
-                f"Location {idx + 1}: skipped — start or end date is missing or not in a supported format (start: {raw_start}, end: {raw_end})."
-            )
+            error_count["dates_missing_or_unsupported"] += 1
             continue
 
         try:
             start_year = int(start_norm[:4])
             end_year = int(end_norm[:4])
         except ValueError:
-            await process.log(
-                f"Location {idx + 1}: skipped — could not read the year from the start or end date."
-            )
+            error_count["year_parse_failed"] += 1
             continue
 
         if start_year < 1981 or end_year < 1981:
-            await process.log(
-                f"Location {idx + 1}: skipped — data is only available from 1981 onward (your range includes an earlier year)."
-            )
+            error_count["year_before_1981"] += 1
             continue
 
         try:
             validate_date(start_norm)
             validate_date(end_norm)
-        except ValueError as e:
-            await process.log(
-                f"Location {idx + 1}: skipped — {e}"
-            )
+        except ValueError:
+            error_count["date_validation_failed"] += 1
             continue
 
         loc2 = dict(loc)
@@ -167,13 +163,7 @@ async def sanitize_locations(locations: list[dict[str, Any]], process: Any) -> l
             loc2["originalStartDate"] = loc.get("startDate")
         if end_norm != loc.get("endDate"):
             loc2["originalEndDate"] = loc.get("endDate")
-        
+
         sanitized.append(loc2)
 
-    if len(sanitized) != len(locations):
-        skipped = len(locations) - len(sanitized)
-        await process.log(
-            f"Validation summary: {len(sanitized)} location(s) ready to use; {skipped} skipped ({len(locations)} total)."
-        )
-
-    return sanitized
+    return sanitized, error_count

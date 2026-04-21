@@ -25,6 +25,60 @@ from utils.dateUtil import (
     sanitize_locations
 )
 
+
+async def _log_sanitize_location_errors(
+    process: IChatBioAgentProcess,
+    error_count: dict[str, int],
+    total_in: int,
+) -> None:
+    for key, count in error_count.items():
+        if not count:
+            continue
+        if key == "lat_long_valid":
+            await process.log(
+                f"{count} location(s) skipped — latitude or longitude is missing or not a valid number."
+            )
+        elif key == "lat_long_range":
+            await process.log(
+                f"{count} location(s) skipped — latitude must be between -90 and 90, "
+                "longitude between -180 and 180."
+            )
+        elif key == "start_date_year_only":
+            await process.log(
+                f"{count} location(s) skipped — start date is only a year. "
+                "Use a full date, for example 2007-06-19."
+            )
+        elif key == "end_date_year_only":
+            await process.log(
+                f"{count} location(s) skipped — end date is only a year. "
+                "Use a full date, for example 2007-06-19."
+            )
+        elif key == "dates_missing_or_unsupported":
+            await process.log(
+                f"{count} location(s) skipped — start or end date is missing or not in a supported format."
+            )
+        elif key == "year_parse_failed":
+            await process.log(
+                f"{count} location(s) skipped — could not read the year from the start or end date."
+            )
+        elif key == "year_before_1981":
+            await process.log(
+                f"{count} location(s) skipped — data is only available from 1981 onward "
+                "(your range includes an earlier year)."
+            )
+        elif key == "date_validation_failed":
+            await process.log(
+                f"{count} location(s) skipped — invalid date or date in the future."
+            )
+
+    skipped = sum(error_count.values())
+    if skipped:
+        kept = total_in - skipped
+        await process.log(
+            f"Validation summary: {kept} location(s) ready to use; {skipped} skipped ({total_in} total)."
+        )
+
+
 def _count_artifact_records(source_content: dict | list) -> int:
     if isinstance(source_content, list):
         return len(source_content)
@@ -417,7 +471,9 @@ class NASAPowerAgent(IChatBioAgent):
                         }
                         for r in source_content
                     ]
-                    locations = await sanitize_locations(locations, process)
+                    n_locations = len(locations)
+                    locations, error_count = sanitize_locations(locations)
+                    await _log_sanitize_location_errors(process, error_count, n_locations)
                 else:
                     schema = extract_json_schema(source_content)
                     await process.log(f"Extracted JSON schema from artifact content")
@@ -448,7 +504,9 @@ class NASAPowerAgent(IChatBioAgent):
                     ]
                     print(f"Locations: {locations}")
 
-                    locations = await sanitize_locations(locations, process)
+                    n_locations = len(locations)
+                    locations, error_count = sanitize_locations(locations)
+                    await _log_sanitize_location_errors(process, error_count, n_locations)
 
                     # await process.log(
                     #     f"Extracted {len(locations)} location record(s) using JQ-based extraction"
