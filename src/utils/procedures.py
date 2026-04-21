@@ -107,8 +107,8 @@ async def extract_map_data_from_json(
         await process.log("Failed to generate JQ query string")
         return None
 
-    print(f"Generation: {generation}")
-    print(f"Query result: {query_result}")
+    # print(f"Generation: {generation}")
+    # print(f"Query result: {query_result}")
 
     if query_result is None:
         await process.log("Failed to execute JQ query string")
@@ -120,8 +120,8 @@ async def extract_map_data_from_json(
         case JQQuery(plan=plan, jq_query_string=jq_query_string):
             # await process.log(f"*Plan to extract map data: {plan}*")
             # await process.log("Generated JQ query", data={"query_string": jq_query_string})
-            print(f"match Generation: {generation}")
-            print(f"match Query result: {query_result}")
+            # print(f"match Generation: {generation}")
+            # print(f"match Query result: {query_result}")
 
             await process.log(f"JQ query extracted {len(query_result)} geographic points")
             return query_result
