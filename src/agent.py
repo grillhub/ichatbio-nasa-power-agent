@@ -116,7 +116,7 @@ class BatchEnrichParams(BaseModel):
     year: Optional[List[str]] = Field(default=None)
     start_range_date: Optional[str] = Field(default=None)
     end_range_date: Optional[str] = Field(default=None)
-    frequency: str = Field(default="daily")
+    # frequency: str = Field(default="daily")
     source: str = Field(default="merra2")
     temporal: str = Field(default="temporal")
     time: str = Field(default="utc")
@@ -525,9 +525,7 @@ class NASAPowerAgent(IChatBioAgent):
                 return
             
             weather_parameters = params.weather_parameters
-            frequency = params.frequency
-            if frequency == 'monthly':
-                frequency = 'daily'
+            frequency = 'daily'
             
             try:
                 await process.log(f"Enriching locations with NASA POWER data...")
