@@ -1,4 +1,5 @@
 from typing import override, Optional, List
+import asyncio
 import json
 import re
 from datetime import UTC, datetime, timedelta
@@ -24,6 +25,24 @@ from utils.procedures import (
 from utils.dateUtil import (
     sanitize_locations
 )
+
+
+async def _nasa_enrich_loading_heartbeat(
+    process: IChatBioAgentProcess,
+    stop: asyncio.Event,
+    interval_s: float = 10.0,
+) -> None:
+    """Emit process.log every interval_s until stop is set (NASA POWER enrichment in progress)."""
+    ticks = 0
+    while not stop.is_set():
+        try:
+            await asyncio.wait_for(stop.wait(), timeout=interval_s)
+        except asyncio.TimeoutError:
+            ticks += 1
+            elapsed = int(ticks * interval_s)
+            await process.log(
+                f"Enriching locations with NASA POWER data... still loading ({elapsed}s elapsed)"
+            )
 
 
 async def _log_sanitize_location_errors(
@@ -530,15 +549,23 @@ class NASAPowerAgent(IChatBioAgent):
             try:
                 await process.log(f"Enriching locations with NASA POWER data...")
 
-                enriched_locations = await enrich_locations_with_nasa_data(
-                    locations=locations,
-                    parameters=weather_parameters,
-                    frequency=frequency,
-                    source=params.source,
-                    temporal=params.temporal,
-                    time_standard=params.time,
-                    process=process,
+                stop_heartbeat = asyncio.Event()
+                heartbeat_task = asyncio.create_task(
+                    _nasa_enrich_loading_heartbeat(process, stop_heartbeat)
                 )
+                try:
+                    enriched_locations = await enrich_locations_with_nasa_data(
+                        locations=locations,
+                        parameters=weather_parameters,
+                        frequency=frequency,
+                        source=params.source,
+                        temporal=params.temporal,
+                        time_standard=params.time,
+                        process=process,
+                    )
+                finally:
+                    stop_heartbeat.set()
+                    await heartbeat_task
                 valid_date_rows = _count_valid_nasa_date_rows(enriched_locations)
                 await process.log(
                     f"Enriched {len(enriched_locations)} location record(s) with NASA POWER data "

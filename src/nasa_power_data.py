@@ -816,7 +816,12 @@ async def enrich_locations_with_nasa_data(
                 }
             )
 
-    results = fetcher.get_data_from_zarr_batch_multiprocessing(queries) if queries else []
+    if queries:
+        results = await asyncio.to_thread(
+            fetcher.get_data_from_zarr_batch_multiprocessing, queries
+        )
+    else:
+        results = []
     # await process.log(f"NASA POWER Zarr query results: {results}")
 
     final_results: List[Dict[str, Any]] = []
