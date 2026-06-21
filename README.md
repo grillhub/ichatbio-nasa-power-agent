@@ -23,7 +23,7 @@ This project bridges that gap by automatically attaching NASA POWER climate meas
 5. Attach climate measurements to each record
 6. Generate a new enriched artifact for downstream AI agents and analytics
 
-NASA POWER Agent workflow
+![NASA POWER Agent workflow](docs/images/workflow.png)
 
 The agent also supports **direct user questions**. For example:
 
